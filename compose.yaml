@@ -1,0 +1,53 @@
+services:
+  mongodb:
+    image: mongo:8.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: personal_memory
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+    volumes:
+      - mongodb_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mongosh --quiet --username "$$MONGO_INITDB_ROOT_USERNAME" --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "db.adminCommand('ping').ok" | grep 1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  memory-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      HTTP_ADDR: :8080
+      MONGODB_URI: mongodb://${MONGO_APP_USERNAME}:${MONGO_APP_PASSWORD}@mongodb:27017/personal_memory?authSource=personal_memory
+      MONGODB_DATABASE: personal_memory
+      AUTH_BEARER_TOKEN: ${AUTH_BEARER_TOKEN}
+      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Bangkok}
+      MAX_COLLECTIONS: ${MAX_COLLECTIONS:-100}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-1048576}
+      MAX_RESULT_RECORDS: ${MAX_RESULT_RECORDS:-100}
+      MAX_RESULT_BYTES: ${MAX_RESULT_BYTES:-1048576}
+      MAX_PIPELINE_STAGES: ${MAX_PIPELINE_STAGES:-10}
+      MONGODB_OPERATION_TIMEOUT: ${MONGODB_OPERATION_TIMEOUT:-5s}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:8080/health/ready]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  mongodb_data:
