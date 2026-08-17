@@ -4,7 +4,7 @@ Anna is a single-user personal-memory backend. Version one provides:
 
 - authenticated REST endpoints;
 - constrained MongoDB reads, writes, and aggregations for flexible collections;
-- managed `accounts` and `transactions` collections with stricter validation;
+- managed finance and reminder collections with stricter validation;
 - integer minor-unit money;
 - split `occurredOn` and optional `occurredAt` date semantics;
 - portable Docker deployment for local use, Railway, and later self-hosting.
@@ -104,7 +104,46 @@ curl --fail-with-body \
   http://localhost:8080/v1/mongo/insert-one
 ```
 
-Generic writes to `accounts` and `transactions` are rejected. Generic reads and safe aggregations remain available.
+Generic writes to all managed collections are rejected. Generic reads and safe aggregations remain available.
+
+## Recurring reminders
+
+Create a reminder rule for wearing a company uniform every Monday and Friday. Its preparation step starts two days before each occurrence:
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $ANNA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id":"company-uniform",
+    "title":"Wear the company uniform",
+    "timezone":"Asia/Bangkok",
+    "weekdays":["monday","friday"],
+    "startsOn":"2026-08-17",
+    "preparation":{"title":"Wash the company uniform","leadDays":2}
+  }' \
+  http://localhost:8080/v1/reminders
+```
+
+Request a digest for a local calendar date. Omitting `on` uses today's date in `DEFAULT_TIMEZONE`:
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $ANNA_TOKEN" \
+  'http://localhost:8080/v1/reminders/digest?on=2026-08-19'
+```
+
+The preparation item identifies the uniform occurrence it belongs to. Marking that preparation complete suppresses its later repeat:
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $ANNA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"reminderId":"company-uniform","occurrenceOn":"2026-08-21","phase":"preparation"}' \
+  http://localhost:8080/v1/reminders/completions
+```
+
+Use phase `occurrence` to complete the wear reminder itself. Completions apply only to the specified occurrence; the recurring rule remains active. This is a pull-based digest, not a scheduled push notification.
 
 ## Endpoints
 
@@ -116,6 +155,9 @@ Generic writes to `accounts` and `transactions` are rejected. Generic reads and 
 | `POST` | `/v1/collections` | Create a flexible collection |
 | `POST` | `/v1/accounts` | Create a managed account |
 | `POST` | `/v1/transactions` | Create an idempotent, validated transaction |
+| `POST` | `/v1/reminders` | Create a managed recurring reminder rule |
+| `GET` | `/v1/reminders/digest` | Retrieve incomplete reminders for a local date |
+| `POST` | `/v1/reminders/completions` | Complete one phase of one reminder occurrence |
 | `POST` | `/v1/mongo/find` | Find documents |
 | `POST` | `/v1/mongo/find-one` | Find one document |
 | `POST` | `/v1/mongo/insert-one` | Insert into a flexible collection |

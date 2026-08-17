@@ -26,6 +26,9 @@ type Application interface {
 	Aggregate(context.Context, memory.AggregateInput) ([]bson.M, error)
 	CreateAccount(context.Context, memory.AccountInput) (memory.AccountInfo, bool, error)
 	CreateTransaction(context.Context, memory.TransactionInput) (memory.WriteResult, error)
+	CreateReminder(context.Context, memory.ReminderInput) (memory.ReminderInfo, bool, error)
+	ReminderDigest(context.Context, string) (memory.ReminderDigest, error)
+	CompleteReminder(context.Context, memory.ReminderCompletionInput) (memory.WriteResult, error)
 }
 
 type Server struct {
@@ -50,6 +53,9 @@ func New(application Application, token string, maxBody int64, logger *slog.Logg
 	mux.Handle("POST /v1/collections", server.authenticate(http.HandlerFunc(server.createCollection)))
 	mux.Handle("POST /v1/accounts", server.authenticate(http.HandlerFunc(server.createAccount)))
 	mux.Handle("POST /v1/transactions", server.authenticate(http.HandlerFunc(server.createTransaction)))
+	mux.Handle("POST /v1/reminders", server.authenticate(http.HandlerFunc(server.createReminder)))
+	mux.Handle("GET /v1/reminders/digest", server.authenticate(http.HandlerFunc(server.reminderDigest)))
+	mux.Handle("POST /v1/reminders/completions", server.authenticate(http.HandlerFunc(server.completeReminder)))
 	mux.Handle("POST /v1/mongo/find", server.authenticate(http.HandlerFunc(server.find)))
 	mux.Handle("POST /v1/mongo/find-one", server.authenticate(http.HandlerFunc(server.findOne)))
 	mux.Handle("POST /v1/mongo/insert-one", server.authenticate(http.HandlerFunc(server.insertOne)))
@@ -106,6 +112,8 @@ func (server *Server) handleError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusConflict, "idempotency_conflict", "requestId was already used for different transaction content")
 	case errors.Is(err, memory.ErrAccountExists):
 		writeError(writer, http.StatusConflict, "account_exists", "an account with this id already exists")
+	case errors.Is(err, memory.ErrReminderExists):
+		writeError(writer, http.StatusConflict, "reminder_exists", "a reminder with this id already exists")
 	case errors.Is(err, memory.ErrResultLimit):
 		writeError(writer, http.StatusUnprocessableEntity, "result_too_large", "the result exceeds a configured limit")
 	case errors.Is(err, memory.ErrCollectionLimit):

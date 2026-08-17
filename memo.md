@@ -74,6 +74,8 @@ people
 events
 measurements
 documents
+reminders
+reminder_completions
 ```
 
 The client may create additional collections through the memory service. Collection creation must follow these rules:
@@ -89,7 +91,7 @@ The client may create additional collections through the memory service. Collect
 
 The service determines accessibility from the bootstrap list and MongoDB's collection catalog after filtering out reserved names. The dedicated application user is the only non-administrative writer to this database. MongoDB administrative operations remain inaccessible.
 
-`accounts` and `transactions` are managed collections with strict MongoDB validation and application-level finance rules. User-created collections remain flexible except for the service-wide safety restrictions.
+`accounts`, `transactions`, `reminders`, and `reminder_completions` are managed collections with strict MongoDB validation and application-level rules. User-created collections remain flexible except for the service-wide safety restrictions.
 
 ### Example transaction
 
@@ -142,6 +144,32 @@ The service determines accessibility from the bootstrap list and MongoDB's colle
 }
 ```
 
+## Recurring Reminder Model
+
+A recurring obligation is stored once as a reminder rule. The service calculates dated occurrences when a morning digest is requested; it does not generate an unbounded set of future documents.
+
+```javascript
+{
+  _id: "company-uniform",
+  schemaVersion: 1,
+  title: "Wear the company uniform",
+  timezone: "Asia/Bangkok",
+  weekdays: ["monday", "friday"],
+  startsOn: "2026-08-17",
+  preparation: {
+    title: "Wash the company uniform",
+    leadDays: 2
+  },
+  active: true,
+  createdAt: ISODate(...),
+  updatedAt: ISODate(...)
+}
+```
+
+The preparation step appears from `leadDays` before each occurrence through the day before it, but only while that occurrence's preparation remains incomplete. The obligation itself appears on the occurrence date. Completion is recorded separately by `(reminderId, occurrenceOn, phase)`, where `phase` is `preparation` or `occurrence`; completing one occurrence never completes the recurring rule.
+
+The digest is pull-based. It is calculated only when requested and does not send notifications or run a scheduler.
+
 ## API Philosophy
 
 Do **not** build a large conventional REST API with endpoints for every possible question.
@@ -152,7 +180,7 @@ Version one exposes REST over HTTPS. The model should be able to request fine-gr
 
 The bridge accepts a deliberately constrained subset of MongoDB queries. It is not an arbitrary MongoDB command proxy.
 
-Generic reads and aggregations may access managed and flexible collections. Generic writes may access only flexible collections. Writes to `accounts`, `transactions`, and future managed collections must pass through their domain-specific interfaces so callers cannot bypass semantic validation.
+Generic reads and aggregations may access managed and flexible collections. Generic writes may access only flexible collections. Writes to any managed collection must pass through its domain-specific interface so callers cannot bypass semantic validation.
 
 Initial low-level operations:
 
@@ -432,6 +460,9 @@ GET  /v1/collections
 POST /v1/collections
 POST /v1/accounts
 POST /v1/transactions
+POST /v1/reminders
+GET  /v1/reminders/digest
+POST /v1/reminders/completions
 POST /v1/mongo/find
 POST /v1/mongo/find-one
 POST /v1/mongo/insert-one
@@ -446,7 +477,7 @@ Requirements:
 - Authentication
 - MongoDB connection through environment variable
 - Controlled collection registry and collection-name validation
-- Strict validation for the managed `accounts` and `transactions` collections
+- Strict validation for all managed collections
 - Generic write rejection for managed collections
 - Result limit
 - Input validation

@@ -64,6 +64,8 @@ func (store *Store) EnsureBootstrap(ctx context.Context) error {
 		{name: "events"},
 		{name: "measurements"},
 		{name: "documents"},
+		{name: "reminders", validator: reminderValidator()},
+		{name: "reminder_completions", validator: reminderCompletionValidator()},
 	}
 	for _, collection := range collections {
 		if exists[collection.name] {
@@ -227,6 +229,102 @@ func (store *Store) CreateTransaction(ctx context.Context, document bson.D, requ
 	return existing.ID, false, nil
 }
 
+func (store *Store) CreateReminder(ctx context.Context, document bson.D) (bool, error) {
+	_, err := store.database.Collection("reminders").InsertOne(ctx, document)
+	if mongo.IsDuplicateKeyError(err) {
+		return false, memory.ErrReminderExists
+	}
+	if err != nil {
+		return false, fmt.Errorf("create reminder: %w", err)
+	}
+	return true, nil
+}
+
+func (store *Store) ReminderByID(ctx context.Context, id string) (memory.ReminderRule, error) {
+	var rule memory.ReminderRule
+	err := store.database.Collection("reminders").FindOne(ctx, bson.D{{Key: "_id", Value: id}}).Decode(&rule)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return memory.ReminderRule{}, memory.ErrNotFound
+	}
+	if err != nil {
+		return memory.ReminderRule{}, fmt.Errorf("find reminder: %w", err)
+	}
+	return rule, nil
+}
+
+func (store *Store) ListActiveReminders(ctx context.Context, limit int64) ([]memory.ReminderRule, error) {
+	cursor, err := store.database.Collection("reminders").Find(
+		ctx,
+		bson.D{{Key: "active", Value: true}},
+		options.Find().SetLimit(limit).SetSort(bson.D{{Key: "_id", Value: 1}}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active reminders: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var rules []memory.ReminderRule
+	if err := cursor.All(ctx, &rules); err != nil {
+		return nil, fmt.Errorf("decode reminders: %w", err)
+	}
+	return rules, nil
+}
+
+func (store *Store) CompletedReminderActions(ctx context.Context, keys []memory.ReminderCompletionKey) (map[memory.ReminderCompletionKey]bool, error) {
+	completed := make(map[memory.ReminderCompletionKey]bool, len(keys))
+	if len(keys) == 0 {
+		return completed, nil
+	}
+	clauses := make(bson.A, 0, len(keys))
+	for _, key := range keys {
+		clauses = append(clauses, bson.D{
+			{Key: "reminderId", Value: key.ReminderID},
+			{Key: "occurrenceOn", Value: key.OccurrenceOn},
+			{Key: "phase", Value: key.Phase},
+		})
+	}
+	cursor, err := store.database.Collection("reminder_completions").Find(ctx, bson.D{{Key: "$or", Value: clauses}})
+	if err != nil {
+		return nil, fmt.Errorf("find reminder completions: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var documents []struct {
+		ReminderID   string `bson:"reminderId"`
+		OccurrenceOn string `bson:"occurrenceOn"`
+		Phase        string `bson:"phase"`
+	}
+	if err := cursor.All(ctx, &documents); err != nil {
+		return nil, fmt.Errorf("decode reminder completions: %w", err)
+	}
+	for _, document := range documents {
+		completed[memory.ReminderCompletionKey{
+			ReminderID: document.ReminderID, OccurrenceOn: document.OccurrenceOn, Phase: document.Phase,
+		}] = true
+	}
+	return completed, nil
+}
+
+func (store *Store) CompleteReminder(ctx context.Context, document bson.D, key memory.ReminderCompletionKey) (any, bool, error) {
+	result, err := store.database.Collection("reminder_completions").InsertOne(ctx, document)
+	if err == nil {
+		return result.InsertedID, true, nil
+	}
+	if !mongo.IsDuplicateKeyError(err) {
+		return nil, false, fmt.Errorf("complete reminder: %w", err)
+	}
+	var existing struct {
+		ID any `bson:"_id"`
+	}
+	findErr := store.database.Collection("reminder_completions").FindOne(ctx, bson.D{
+		{Key: "reminderId", Value: key.ReminderID},
+		{Key: "occurrenceOn", Value: key.OccurrenceOn},
+		{Key: "phase", Value: key.Phase},
+	}).Decode(&existing)
+	if findErr != nil {
+		return nil, false, fmt.Errorf("resolve duplicate reminder completion: %w", findErr)
+	}
+	return existing.ID, false, nil
+}
+
 func (store *Store) ensureIndexes(ctx context.Context) error {
 	transactionIndexes := []mongo.IndexModel{
 		{
@@ -245,6 +343,21 @@ func (store *Store) ensureIndexes(ctx context.Context) error {
 	}
 	if _, err := store.database.Collection("transactions").Indexes().CreateMany(ctx, transactionIndexes); err != nil {
 		return fmt.Errorf("create transaction indexes: %w", err)
+	}
+	reminderIndexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "active", Value: 1}}, Options: options.Index().SetName("active_reminders")},
+	}
+	if _, err := store.database.Collection("reminders").Indexes().CreateMany(ctx, reminderIndexes); err != nil {
+		return fmt.Errorf("create reminder indexes: %w", err)
+	}
+	completionIndexes := []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "reminderId", Value: 1}, {Key: "occurrenceOn", Value: 1}, {Key: "phase", Value: 1}},
+			Options: options.Index().SetName("uniq_reminder_occurrence_phase").SetUnique(true),
+		},
+	}
+	if _, err := store.database.Collection("reminder_completions").Indexes().CreateMany(ctx, completionIndexes); err != nil {
+		return fmt.Errorf("create reminder completion indexes: %w", err)
 	}
 	return nil
 }
@@ -335,6 +448,54 @@ func transactionValidator() bson.M {
 			},
 			"createdAt": bson.M{"bsonType": "date"},
 			"updatedAt": bson.M{"bsonType": "date"},
+		},
+	}}
+}
+
+func reminderValidator() bson.M {
+	return bson.M{"$jsonSchema": bson.M{
+		"bsonType":             "object",
+		"additionalProperties": false,
+		"required": bson.A{
+			"_id", "schemaVersion", "title", "timezone", "weekdays", "startsOn", "active", "createdAt", "updatedAt",
+		},
+		"properties": bson.M{
+			"_id":           bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
+			"schemaVersion": bson.M{"bsonType": bson.A{"int", "long"}, "minimum": 1},
+			"title":         bson.M{"bsonType": "string", "minLength": 1, "maxLength": 300},
+			"timezone":      bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
+			"weekdays": bson.M{
+				"bsonType": "array", "minItems": 1, "maxItems": 7, "uniqueItems": true,
+				"items": bson.M{"enum": bson.A{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}},
+			},
+			"startsOn": bson.M{"bsonType": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+			"preparation": bson.M{
+				"bsonType": "object", "additionalProperties": false, "required": bson.A{"title", "leadDays"},
+				"properties": bson.M{
+					"title":    bson.M{"bsonType": "string", "minLength": 1, "maxLength": 300},
+					"leadDays": bson.M{"bsonType": bson.A{"int", "long"}, "minimum": 1, "maximum": 30},
+				},
+			},
+			"active":    bson.M{"bsonType": "bool"},
+			"createdAt": bson.M{"bsonType": "date"},
+			"updatedAt": bson.M{"bsonType": "date"},
+		},
+	}}
+}
+
+func reminderCompletionValidator() bson.M {
+	return bson.M{"$jsonSchema": bson.M{
+		"bsonType":             "object",
+		"additionalProperties": false,
+		"required":             bson.A{"_id", "schemaVersion", "reminderId", "occurrenceOn", "phase", "completedAt", "createdAt"},
+		"properties": bson.M{
+			"_id":           bson.M{"bsonType": "objectId"},
+			"schemaVersion": bson.M{"bsonType": bson.A{"int", "long"}, "minimum": 1},
+			"reminderId":    bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
+			"occurrenceOn":  bson.M{"bsonType": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+			"phase":         bson.M{"enum": bson.A{"preparation", "occurrence"}},
+			"completedAt":   bson.M{"bsonType": "date"},
+			"createdAt":     bson.M{"bsonType": "date"},
 		},
 	}}
 }

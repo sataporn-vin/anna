@@ -1,8 +1,10 @@
-# Personal Finance Memory
+# Personal Memory
 
-This context records financial events from lightweight personal memos while preserving enough source information for review and correction.
+This context stores personal facts, financial events, and reminders while preserving enough source information for review and correction.
 
 ## Language
+
+### Finance
 
 **Expense memo**:
 A pasted block of date headings and amount-description lines submitted for parsing.
@@ -47,3 +49,25 @@ _Avoid_: Account, payment source
 **Category path**:
 An ordered hierarchy of category segments, displayed by joining segments with a dot.
 _Avoid_: Category 1, Category 2, Category 3
+
+### Reminders
+
+**Reminder rule**:
+A continuing obligation together with the calendar pattern on which it recurs.
+_Avoid_: Reminder row, recurring event
+
+**Reminder occurrence**:
+One dated instance of a reminder rule.
+_Avoid_: Event, generated reminder
+
+**Preparation step**:
+An action that must be completed before a reminder occurrence and is repeated in the digest while incomplete.
+_Avoid_: Early reminder, pre-event
+
+**Completion**:
+An acknowledgement that one step of one reminder occurrence is done; it does not complete the reminder rule.
+_Avoid_: Dismissal, rule completion
+
+**Morning digest**:
+The reminders due on a requested local calendar date, excluding completed steps.
+_Avoid_: Notification, scheduled message

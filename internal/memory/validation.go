@@ -22,6 +22,8 @@ var (
 	expressionOperators   = stringSet("$sum", "$avg", "$min", "$max", "$first", "$last", "$dateToString", "$literal")
 	transactionKinds      = stringSet("expense", "income", "refund", "credit_card_payment", "transfer")
 	accountKinds          = stringSet("bank_account", "credit_card", "cash", "wallet", "other")
+	weekdayNames          = stringSet("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+	reminderPhases        = stringSet("preparation", "occurrence")
 	serverFields          = stringSet("_id", "createdAt", "updatedAt")
 )
 
@@ -40,7 +42,7 @@ func IsReservedCollection(name string) bool {
 }
 
 func IsManagedCollection(name string) bool {
-	return name == "transactions" || name == "accounts"
+	return name == "transactions" || name == "accounts" || name == "reminders" || name == "reminder_completions"
 }
 
 func ValidateFilter(document bson.D, allowEmpty bool) error {
@@ -152,6 +154,73 @@ func ValidateAccount(input AccountInput) error {
 		return fmt.Errorf("currency must be a three-letter uppercase code")
 	}
 	return nil
+}
+
+func ValidateReminder(input *ReminderInput, defaultTimezone string, now time.Time) error {
+	if !idPattern.MatchString(input.ID) || len(input.ID) > 100 {
+		return fmt.Errorf("id must be a lowercase kebab-case identifier of at most 100 characters")
+	}
+	input.Title = strings.TrimSpace(input.Title)
+	if input.Title == "" || len(input.Title) > 300 {
+		return fmt.Errorf("title must contain 1 to 300 characters")
+	}
+	if input.Timezone == "" {
+		input.Timezone = defaultTimezone
+	}
+	location, err := time.LoadLocation(input.Timezone)
+	if err != nil {
+		return fmt.Errorf("timezone must be a valid IANA timezone")
+	}
+	if input.StartsOn == "" {
+		input.StartsOn = now.In(location).Format("2006-01-02")
+	}
+	if _, err := parseDate(input.StartsOn, location); err != nil {
+		return fmt.Errorf("startsOn must be a real date in YYYY-MM-DD format")
+	}
+	if len(input.Weekdays) == 0 || len(input.Weekdays) > 7 {
+		return fmt.Errorf("weekdays must contain between 1 and 7 values")
+	}
+	seen := make(map[string]bool, len(input.Weekdays))
+	for _, weekday := range input.Weekdays {
+		if !weekdayNames[weekday] {
+			return fmt.Errorf("weekday %q is not supported", weekday)
+		}
+		if seen[weekday] {
+			return fmt.Errorf("weekday %q is repeated", weekday)
+		}
+		seen[weekday] = true
+	}
+	if input.Preparation != nil {
+		input.Preparation.Title = strings.TrimSpace(input.Preparation.Title)
+		if input.Preparation.Title == "" || len(input.Preparation.Title) > 300 {
+			return fmt.Errorf("preparation.title must contain 1 to 300 characters")
+		}
+		if input.Preparation.LeadDays < 1 || input.Preparation.LeadDays > 30 {
+			return fmt.Errorf("preparation.leadDays must be between 1 and 30")
+		}
+	}
+	return nil
+}
+
+func ValidateReminderCompletion(input ReminderCompletionInput) error {
+	if !idPattern.MatchString(input.ReminderID) || len(input.ReminderID) > 100 {
+		return fmt.Errorf("reminderId must be a lowercase kebab-case identifier")
+	}
+	if _, err := parseDate(input.OccurrenceOn, time.UTC); err != nil {
+		return fmt.Errorf("occurrenceOn must be a real date in YYYY-MM-DD format")
+	}
+	if !reminderPhases[input.Phase] {
+		return fmt.Errorf("phase must be preparation or occurrence")
+	}
+	return nil
+}
+
+func parseDate(value string, location *time.Location) (time.Time, error) {
+	date, err := time.ParseInLocation("2006-01-02", value, location)
+	if err != nil || date.Format("2006-01-02") != value {
+		return time.Time{}, fmt.Errorf("invalid date")
+	}
+	return date, nil
 }
 
 func ValidateTransaction(input *TransactionInput, defaultTimezone string) error {

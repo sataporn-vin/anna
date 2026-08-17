@@ -77,3 +77,24 @@ func TestNormalizeDescriptor(t *testing.T) {
 		t.Fatalf("unexpected normalization: %v", normalized)
 	}
 }
+
+func TestValidateReminder(t *testing.T) {
+	input := ReminderInput{
+		ID:          "company-uniform",
+		Title:       "Wear the company uniform",
+		Weekdays:    []string{"monday", "friday"},
+		Preparation: &ReminderPreparationInput{Title: "Wash the company uniform", LeadDays: 2},
+	}
+	if err := ValidateReminder(&input, "Asia/Bangkok", time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("expected reminder to be valid: %v", err)
+	}
+	if input.Timezone != "Asia/Bangkok" || input.StartsOn != "2026-08-17" {
+		t.Fatalf("expected defaults, got timezone=%q startsOn=%q", input.Timezone, input.StartsOn)
+	}
+
+	duplicateWeekday := input
+	duplicateWeekday.Weekdays = []string{"monday", "monday"}
+	if err := ValidateReminder(&duplicateWeekday, "Asia/Bangkok", time.Now()); err == nil {
+		t.Fatal("expected duplicate weekday to be rejected")
+	}
+}

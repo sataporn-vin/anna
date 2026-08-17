@@ -20,4 +20,9 @@ type Repository interface {
 	CreateAccount(context.Context, bson.D) (bool, error)
 	AccountIsActive(context.Context, string) (bool, error)
 	CreateTransaction(context.Context, bson.D, string, string) (any, bool, error)
+	CreateReminder(context.Context, bson.D) (bool, error)
+	ReminderByID(context.Context, string) (ReminderRule, error)
+	ListActiveReminders(context.Context, int64) ([]ReminderRule, error)
+	CompletedReminderActions(context.Context, []ReminderCompletionKey) (map[ReminderCompletionKey]bool, error)
+	CompleteReminder(context.Context, bson.D, ReminderCompletionKey) (any, bool, error)
 }

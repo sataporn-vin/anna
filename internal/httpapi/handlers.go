@@ -105,6 +105,54 @@ func (server *Server) createTransaction(writer http.ResponseWriter, request *htt
 	writeWriteResult(writer, status, result)
 }
 
+func (server *Server) createReminder(writer http.ResponseWriter, request *http.Request) {
+	var input memory.ReminderInput
+	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {
+		server.handleError(writer, memory.Invalid(err))
+		return
+	}
+	reminder, created, err := server.application.CreateReminder(request.Context(), input)
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(writer, status, map[string]any{"data": reminder, "created": created})
+}
+
+func (server *Server) reminderDigest(writer http.ResponseWriter, request *http.Request) {
+	digest, err := server.application.ReminderDigest(request.Context(), request.URL.Query().Get("on"))
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"data": digest.Items,
+		"meta": map[string]any{"count": len(digest.Items), "on": digest.On},
+	})
+}
+
+func (server *Server) completeReminder(writer http.ResponseWriter, request *http.Request) {
+	var input memory.ReminderCompletionInput
+	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {
+		server.handleError(writer, memory.Invalid(err))
+		return
+	}
+	result, err := server.application.CompleteReminder(request.Context(), input)
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	writeWriteResult(writer, status, result)
+}
+
 func (server *Server) find(writer http.ResponseWriter, request *http.Request) {
 	input, err := server.decodeFind(writer, request)
 	if err != nil {

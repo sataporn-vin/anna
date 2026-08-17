@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ var bootstrapCollections = []string{
 	"events",
 	"measurements",
 	"documents",
+	"reminders",
+	"reminder_completions",
 }
 
 type Service struct {
@@ -283,6 +286,188 @@ func (service *Service) CreateTransaction(ctx context.Context, input Transaction
 		return WriteResult{}, err
 	}
 	return WriteResult{ID: id, Created: created}, nil
+}
+
+func (service *Service) CreateReminder(ctx context.Context, input ReminderInput) (ReminderInfo, bool, error) {
+	now := service.now()
+	if err := ValidateReminder(&input, service.defaultTimezone, now); err != nil {
+		return ReminderInfo{}, false, Invalid(err)
+	}
+	now = now.UTC()
+	document := bson.D{
+		{Key: "_id", Value: input.ID},
+		{Key: "schemaVersion", Value: int32(1)},
+		{Key: "title", Value: input.Title},
+		{Key: "timezone", Value: input.Timezone},
+		{Key: "weekdays", Value: input.Weekdays},
+		{Key: "startsOn", Value: input.StartsOn},
+		{Key: "active", Value: true},
+		{Key: "createdAt", Value: now},
+		{Key: "updatedAt", Value: now},
+	}
+	if input.Preparation != nil {
+		document = append(document[:6], append(bson.D{{Key: "preparation", Value: input.Preparation}}, document[6:]...)...)
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	created, err := service.repository.CreateReminder(ctx, document)
+	info := ReminderInfo{
+		ID: input.ID, Title: input.Title, Timezone: input.Timezone, Weekdays: input.Weekdays,
+		StartsOn: input.StartsOn, Preparation: input.Preparation, Active: true,
+	}
+	return info, created, err
+}
+
+func (service *Service) ReminderDigest(ctx context.Context, on string) (ReminderDigest, error) {
+	if on == "" {
+		location, err := time.LoadLocation(service.defaultTimezone)
+		if err != nil {
+			return ReminderDigest{}, fmt.Errorf("load default timezone: %w", err)
+		}
+		on = service.now().In(location).Format("2006-01-02")
+	}
+	if _, err := parseDate(on, time.UTC); err != nil {
+		return ReminderDigest{}, Invalid(fmt.Errorf("on must be a real date in YYYY-MM-DD format"))
+	}
+
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	rules, err := service.repository.ListActiveReminders(ctx, service.limits.MaxResultRecords+1)
+	if err != nil {
+		return ReminderDigest{}, err
+	}
+	if int64(len(rules)) > service.limits.MaxResultRecords {
+		return ReminderDigest{}, fmt.Errorf("%w: active reminder count", ErrResultLimit)
+	}
+
+	items := make([]ReminderDigestItem, 0)
+	keys := make([]ReminderCompletionKey, 0)
+	for _, rule := range rules {
+		location, err := time.LoadLocation(rule.Timezone)
+		if err != nil {
+			return ReminderDigest{}, fmt.Errorf("load timezone for reminder %q: %w", rule.ID, err)
+		}
+		digestDate, err := parseDate(on, location)
+		if err != nil {
+			return ReminderDigest{}, Invalid(fmt.Errorf("on must be a real date in YYYY-MM-DD format"))
+		}
+		startsOn, err := parseDate(rule.StartsOn, location)
+		if err != nil {
+			return ReminderDigest{}, fmt.Errorf("reminder %q has an invalid startsOn date", rule.ID)
+		}
+
+		if !digestDate.Before(startsOn) && reminderOccursOn(rule, digestDate) {
+			item := ReminderDigestItem{ReminderID: rule.ID, OccurrenceOn: on, Phase: "occurrence", Title: rule.Title}
+			items = append(items, item)
+			keys = append(keys, completionKey(item))
+		}
+		if rule.Preparation == nil {
+			continue
+		}
+		for daysAhead := 1; daysAhead <= rule.Preparation.LeadDays; daysAhead++ {
+			occurrence := digestDate.AddDate(0, 0, daysAhead)
+			if occurrence.Before(startsOn) || !reminderOccursOn(rule, occurrence) {
+				continue
+			}
+			item := ReminderDigestItem{
+				ReminderID: rule.ID, OccurrenceOn: occurrence.Format("2006-01-02"),
+				Phase: "preparation", Title: rule.Preparation.Title,
+			}
+			items = append(items, item)
+			keys = append(keys, completionKey(item))
+		}
+	}
+
+	completed, err := service.repository.CompletedReminderActions(ctx, keys)
+	if err != nil {
+		return ReminderDigest{}, err
+	}
+	open := make([]ReminderDigestItem, 0, len(items))
+	for _, item := range items {
+		if !completed[completionKey(item)] {
+			open = append(open, item)
+		}
+	}
+	sort.Slice(open, func(left, right int) bool {
+		if open[left].OccurrenceOn != open[right].OccurrenceOn {
+			return open[left].OccurrenceOn < open[right].OccurrenceOn
+		}
+		if open[left].Phase != open[right].Phase {
+			return open[left].Phase == "occurrence"
+		}
+		return open[left].ReminderID < open[right].ReminderID
+	})
+	if int64(len(open)) > service.limits.MaxResultRecords {
+		return ReminderDigest{}, fmt.Errorf("%w: digest item count", ErrResultLimit)
+	}
+	digest := ReminderDigest{On: on, Items: open}
+	data, err := json.Marshal(digest)
+	if err != nil {
+		return ReminderDigest{}, fmt.Errorf("encode reminder digest: %w", err)
+	}
+	if len(data) > service.limits.MaxResultBytes {
+		return ReminderDigest{}, fmt.Errorf("%w: digest byte count", ErrResultLimit)
+	}
+	return digest, nil
+}
+
+func (service *Service) CompleteReminder(ctx context.Context, input ReminderCompletionInput) (WriteResult, error) {
+	if err := ValidateReminderCompletion(input); err != nil {
+		return WriteResult{}, Invalid(err)
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	rule, err := service.repository.ReminderByID(ctx, input.ReminderID)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	location, err := time.LoadLocation(rule.Timezone)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("load reminder timezone: %w", err)
+	}
+	occurrence, err := parseDate(input.OccurrenceOn, location)
+	if err != nil {
+		return WriteResult{}, Invalid(fmt.Errorf("occurrenceOn must be a real date in YYYY-MM-DD format"))
+	}
+	startsOn, err := parseDate(rule.StartsOn, location)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("reminder has an invalid startsOn date")
+	}
+	if occurrence.Before(startsOn) || !reminderOccursOn(rule, occurrence) {
+		return WriteResult{}, Invalid(fmt.Errorf("occurrenceOn is not an occurrence of this reminder"))
+	}
+	if input.Phase == "preparation" && rule.Preparation == nil {
+		return WriteResult{}, Invalid(fmt.Errorf("this reminder has no preparation step"))
+	}
+	key := ReminderCompletionKey{ReminderID: input.ReminderID, OccurrenceOn: input.OccurrenceOn, Phase: input.Phase}
+	now := service.now().UTC()
+	document := bson.D{
+		{Key: "schemaVersion", Value: int32(1)},
+		{Key: "reminderId", Value: input.ReminderID},
+		{Key: "occurrenceOn", Value: input.OccurrenceOn},
+		{Key: "phase", Value: input.Phase},
+		{Key: "completedAt", Value: now},
+		{Key: "createdAt", Value: now},
+	}
+	id, created, err := service.repository.CompleteReminder(ctx, document, key)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	return WriteResult{ID: id, Created: created}, nil
+}
+
+func reminderOccursOn(rule ReminderRule, date time.Time) bool {
+	weekday := strings.ToLower(date.Weekday().String())
+	for _, scheduled := range rule.Weekdays {
+		if scheduled == weekday {
+			return true
+		}
+	}
+	return false
+}
+
+func completionKey(item ReminderDigestItem) ReminderCompletionKey {
+	return ReminderCompletionKey{ReminderID: item.ReminderID, OccurrenceOn: item.OccurrenceOn, Phase: item.Phase}
 }
 
 func (service *Service) validateReadInput(ctx context.Context, input *FindInput) error {

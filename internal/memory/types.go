@@ -15,6 +15,7 @@ var (
 	ErrInactiveAccount     = errors.New("account does not exist or is inactive")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used for different content")
 	ErrAccountExists       = errors.New("account already exists")
+	ErrReminderExists      = errors.New("reminder already exists")
 	ErrResultLimit         = errors.New("result exceeds a configured limit")
 )
 
@@ -106,4 +107,62 @@ type TransactionInput struct {
 type CollectionInfo struct {
 	Name    string `json:"name"`
 	Managed bool   `json:"managed"`
+}
+
+type ReminderPreparationInput struct {
+	Title    string `json:"title" bson:"title"`
+	LeadDays int    `json:"leadDays" bson:"leadDays"`
+}
+
+type ReminderInput struct {
+	ID          string                    `json:"id"`
+	Title       string                    `json:"title"`
+	Timezone    string                    `json:"timezone,omitempty"`
+	Weekdays    []string                  `json:"weekdays"`
+	StartsOn    string                    `json:"startsOn,omitempty"`
+	Preparation *ReminderPreparationInput `json:"preparation,omitempty"`
+}
+
+type ReminderInfo struct {
+	ID          string                    `json:"id"`
+	Title       string                    `json:"title"`
+	Timezone    string                    `json:"timezone"`
+	Weekdays    []string                  `json:"weekdays"`
+	StartsOn    string                    `json:"startsOn"`
+	Preparation *ReminderPreparationInput `json:"preparation,omitempty"`
+	Active      bool                      `json:"active"`
+}
+
+type ReminderRule struct {
+	ID          string                    `bson:"_id"`
+	Title       string                    `bson:"title"`
+	Timezone    string                    `bson:"timezone"`
+	Weekdays    []string                  `bson:"weekdays"`
+	StartsOn    string                    `bson:"startsOn"`
+	Preparation *ReminderPreparationInput `bson:"preparation,omitempty"`
+	Active      bool                      `bson:"active"`
+}
+
+type ReminderCompletionInput struct {
+	ReminderID   string `json:"reminderId"`
+	OccurrenceOn string `json:"occurrenceOn"`
+	Phase        string `json:"phase"`
+}
+
+type ReminderCompletionKey struct {
+	ReminderID   string
+	OccurrenceOn string
+	Phase        string
+}
+
+type ReminderDigestItem struct {
+	ReminderID   string `json:"reminderId"`
+	OccurrenceOn string `json:"occurrenceOn"`
+	Phase        string `json:"phase"`
+	Title        string `json:"title"`
+}
+
+type ReminderDigest struct {
+	On    string               `json:"on"`
+	Items []ReminderDigestItem `json:"items"`
 }
