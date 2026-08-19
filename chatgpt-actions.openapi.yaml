@@ -181,11 +181,11 @@ paths:
           $ref: "#/components/responses/ErrorResponse"
 
   /v1/events/{id}:
-    parameters:
-      - $ref: "#/components/parameters/EventId"
     get:
       operationId: getEvent
       summary: Get one event
+      parameters:
+        - $ref: "#/components/parameters/EventId"
       responses:
         "200":
           description: The event.
@@ -202,6 +202,8 @@ paths:
         Apply merge-patch semantics to mutable event fields. Null clears an
         optional field. Server-owned fields and original source text cannot be
         changed.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
       requestBody:
         required: true
         content:
@@ -224,6 +226,8 @@ paths:
       operationId: deleteEvent
       summary: Delete an event
       description: Delete only the event; linked transactions are unchanged.
+      parameters:
+        - $ref: "#/components/parameters/EventId"
       responses:
         "204":
           description: The event was deleted.
@@ -509,6 +513,14 @@ components:
       description: >-
         Guarded event-specific extension data. Keys cannot start with a dollar
         sign or contain a dot. Values are short JSON scalars or scalar arrays.
+        The listed keys are examples; descriptive additional keys are allowed.
+      properties:
+        restaurantChain:
+          $ref: "#/components/schemas/EventAttributeValue"
+        occasion:
+          $ref: "#/components/schemas/EventAttributeValue"
+        department:
+          $ref: "#/components/schemas/EventAttributeValue"
       additionalProperties:
         $ref: "#/components/schemas/EventAttributeValue"
 
@@ -692,6 +704,58 @@ components:
     EventDocument:
       type: object
       description: Managed event document encoded as MongoDB Extended JSON.
+      properties:
+        _id:
+          description: MongoDB Extended JSON object identifier.
+        schemaVersion:
+          type: integer
+        occurredOn:
+          type: string
+          format: date
+        occurredAt:
+          description: Optional MongoDB Extended JSON date-time.
+        timezone:
+          type: string
+        title:
+          type: string
+        eventType:
+          $ref: "#/components/schemas/EventType"
+        location:
+          description: Location string or null.
+        people:
+          type: array
+          items:
+            type: string
+        description:
+          description: Event description string or null.
+        tags:
+          type: array
+          items:
+            type: string
+        financialContext:
+          description: Financial context object or null.
+        relatedTransactionIds:
+          type: array
+          items:
+            description: MongoDB Extended JSON object identifier.
+        attributes:
+          $ref: "#/components/schemas/EventAttributes"
+        source:
+          type: object
+          properties:
+            type:
+              type: string
+            requestId:
+              type: string
+              format: uuid
+            requestHash:
+              type: string
+            rawText:
+              type: string
+        createdAt:
+          description: MongoDB Extended JSON date-time.
+        updatedAt:
+          description: MongoDB Extended JSON date-time.
       additionalProperties: true
 
     EventResponse:
