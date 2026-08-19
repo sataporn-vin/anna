@@ -1,11 +1,14 @@
 package memory
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -24,6 +27,7 @@ var (
 	accountKinds          = stringSet("bank_account", "credit_card", "cash", "wallet", "other")
 	weekdayNames          = stringSet("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 	reminderPhases        = stringSet("preparation", "occurrence")
+	eventTypes            = stringSet("company-event", "social-event", "meal-gathering", "appointment-completed", "travel", "celebration", "personal-milestone", "work-milestone", "health-fitness", "pet", "family", "general-memory")
 	serverFields          = stringSet("_id", "createdAt", "updatedAt")
 )
 
@@ -42,7 +46,7 @@ func IsReservedCollection(name string) bool {
 }
 
 func IsManagedCollection(name string) bool {
-	return name == "transactions" || name == "accounts" || name == "reminders" || name == "reminder_completions"
+	return name == "transactions" || name == "accounts" || name == "events" || name == "reminders" || name == "reminder_completions"
 }
 
 func ValidateFilter(document bson.D, allowEmpty bool) error {
@@ -281,6 +285,334 @@ func ValidateTransaction(input *TransactionInput, defaultTimezone string) error 
 	}
 	return nil
 }
+
+func ValidateEvent(input *EventInput, defaultTimezone string, now time.Time) error {
+	if _, err := uuid.Parse(input.RequestID); err != nil {
+		return fmt.Errorf("requestId must be a UUID")
+	}
+	if input.Timezone == "" {
+		input.Timezone = defaultTimezone
+	}
+	location, err := time.LoadLocation(input.Timezone)
+	if err != nil {
+		return fmt.Errorf("timezone must be a valid IANA timezone")
+	}
+	occurredOn, err := parseDate(input.OccurredOn, location)
+	if err != nil {
+		return fmt.Errorf("occurredOn must be a real date in YYYY-MM-DD format")
+	}
+	today, _ := parseDate(now.In(location).Format("2006-01-02"), location)
+	if occurredOn.After(today) {
+		return fmt.Errorf("occurredOn must not be in the future")
+	}
+	if input.OccurredAt != nil && input.OccurredAt.In(location).Format("2006-01-02") != input.OccurredOn {
+		return fmt.Errorf("occurredAt does not occur on occurredOn in timezone")
+	}
+	if input.OccurredAt != nil && input.OccurredAt.After(now) {
+		return fmt.Errorf("occurredAt must not be in the future")
+	}
+	input.Title = normalizeDisplay(input.Title)
+	if runeLength(input.Title) < 1 || runeLength(input.Title) > 300 {
+		return fmt.Errorf("title must contain 1 to 300 characters")
+	}
+	if input.EventType == "" {
+		input.EventType = "general-memory"
+	}
+	if !eventTypes[input.EventType] {
+		return fmt.Errorf("eventType is not supported")
+	}
+	if input.Location != nil {
+		normalized := normalizeDisplay(*input.Location)
+		if runeLength(normalized) < 1 || runeLength(normalized) > 500 {
+			return fmt.Errorf("location must contain 1 to 500 characters")
+		}
+		input.Location = &normalized
+	}
+	if input.Description != nil {
+		normalized := strings.TrimSpace(norm.NFKC.String(*input.Description))
+		if runeLength(normalized) > 5000 {
+			return fmt.Errorf("description must not exceed 5000 characters")
+		}
+		input.Description = &normalized
+	}
+	if strings.TrimSpace(input.RawText) == "" || runeLength(input.RawText) > 5000 {
+		return fmt.Errorf("rawText must contain 1 to 5000 characters")
+	}
+	if err := normalizeEventPeople(input); err != nil {
+		return err
+	}
+	if err := normalizeEventTags(input); err != nil {
+		return err
+	}
+	searchValues := []string{input.Title}
+	if input.Location != nil {
+		searchValues = append(searchValues, *input.Location)
+	}
+	searchValues = append(searchValues, input.People...)
+	searchValues = append(searchValues, input.Tags...)
+	searchTokens := eventSearchTokens(searchValues...)
+	if len(searchTokens) > 100 {
+		return fmt.Errorf("event content must not exceed 100 searchable tokens")
+	}
+	for _, token := range searchTokens {
+		if runeLength(token) > 500 {
+			return fmt.Errorf("event search tokens must not exceed 500 characters")
+		}
+	}
+	if err := validateFinancialContext(input.FinancialContext); err != nil {
+		return err
+	}
+	if len(input.RelatedTransactionIDs) > 20 {
+		return fmt.Errorf("relatedTransactionIds must not exceed 20 values")
+	}
+	seenTransactions := make(map[string]bool, len(input.RelatedTransactionIDs))
+	for _, id := range input.RelatedTransactionIDs {
+		if _, err := bson.ObjectIDFromHex(id); err != nil {
+			return fmt.Errorf("relatedTransactionIds contains an invalid object identifier")
+		}
+		if seenTransactions[id] {
+			return fmt.Errorf("relatedTransactionIds contains a duplicate")
+		}
+		seenTransactions[id] = true
+	}
+	if input.FinancialContext != nil && input.FinancialContext.PersonalPaymentMinor != nil && *input.FinancialContext.PersonalPaymentMinor > 0 && len(input.RelatedTransactionIDs) == 0 {
+		return fmt.Errorf("relatedTransactionIds is required when personalPaymentMinor is positive")
+	}
+	return validateEventAttributes(input.Attributes)
+}
+
+func ValidateEventSearch(input *EventSearchInput, maxResults int64) error {
+	if input.OccurredFrom != "" {
+		if _, err := parseDate(input.OccurredFrom, time.UTC); err != nil {
+			return fmt.Errorf("occurredFrom must be a real date in YYYY-MM-DD format")
+		}
+	}
+	if input.OccurredTo != "" {
+		if _, err := parseDate(input.OccurredTo, time.UTC); err != nil {
+			return fmt.Errorf("occurredTo must be a real date in YYYY-MM-DD format")
+		}
+	}
+	if input.OccurredFrom != "" && input.OccurredTo != "" && input.OccurredFrom > input.OccurredTo {
+		return fmt.Errorf("occurredFrom must not follow occurredTo")
+	}
+	if input.CreatedFrom != nil && input.CreatedTo != nil && !input.CreatedFrom.Before(*input.CreatedTo) {
+		return fmt.Errorf("createdFrom must be before createdTo")
+	}
+	seenTypes := make(map[string]bool, len(input.EventTypes))
+	for _, eventType := range input.EventTypes {
+		if !eventTypes[eventType] {
+			return fmt.Errorf("eventTypes contains an unsupported value")
+		}
+		if seenTypes[eventType] {
+			return fmt.Errorf("eventTypes contains a duplicate")
+		}
+		seenTypes[eventType] = true
+	}
+	if input.Location != "" {
+		input.Location = normalizeSearchValue(input.Location)
+		if runeLength(input.Location) > 500 {
+			return fmt.Errorf("location must not exceed 500 characters")
+		}
+	}
+	if len(input.People) > 50 {
+		return fmt.Errorf("people must not exceed 50 values")
+	}
+	for index, person := range input.People {
+		input.People[index] = normalizeSearchValue(person)
+		if input.People[index] == "" || runeLength(input.People[index]) > 200 {
+			return fmt.Errorf("people contains an invalid value")
+		}
+	}
+	if len(input.Tags) > 20 {
+		return fmt.Errorf("tags must not exceed 20 values")
+	}
+	for index, tag := range input.Tags {
+		input.Tags[index] = normalizeSearchValue(tag)
+		if input.Tags[index] == "" || runeLength(input.Tags[index]) > 50 {
+			return fmt.Errorf("tags contains an invalid value")
+		}
+	}
+	input.SearchTokens = eventSearchTokens(input.Text)
+	if input.Text != "" && len(input.SearchTokens) == 0 {
+		return fmt.Errorf("text must contain at least one searchable token")
+	}
+	if len(input.SearchTokens) > 20 {
+		return fmt.Errorf("text must not exceed 20 searchable tokens")
+	}
+	for _, token := range input.SearchTokens {
+		if runeLength(token) > 500 {
+			return fmt.Errorf("text tokens must not exceed 500 characters")
+		}
+	}
+	if input.Sort == "" {
+		input.Sort = "occurred_desc"
+	}
+	if input.Sort != "occurred_desc" && input.Sort != "occurred_asc" && input.Sort != "created_desc" {
+		return fmt.Errorf("sort is not supported")
+	}
+	if input.Limit == 0 {
+		input.Limit = 50
+	}
+	limit := min(int64(100), maxResults)
+	if input.Limit < 1 || input.Limit > limit {
+		return fmt.Errorf("limit must be between 1 and %d", limit)
+	}
+	if input.OccurredFrom == "" && input.OccurredTo == "" && input.CreatedFrom == nil && input.CreatedTo == nil && len(input.EventTypes) == 0 && input.Location == "" && len(input.People) == 0 && len(input.Tags) == 0 && len(input.SearchTokens) == 0 {
+		return fmt.Errorf("at least one search filter is required")
+	}
+	return nil
+}
+
+func normalizeEventPeople(input *EventInput) error {
+	if len(input.People) > 50 {
+		return fmt.Errorf("people must not exceed 50 values")
+	}
+	seen := make(map[string]bool, len(input.People))
+	people := make([]string, 0, len(input.People))
+	for _, value := range input.People {
+		display := normalizeDisplay(value)
+		if runeLength(display) < 1 || runeLength(display) > 200 {
+			return fmt.Errorf("people contains a value outside 1 to 200 characters")
+		}
+		key := normalizeSearchValue(display)
+		if !seen[key] {
+			seen[key] = true
+			people = append(people, display)
+		}
+	}
+	input.People = people
+	return nil
+}
+
+func normalizeEventTags(input *EventInput) error {
+	if len(input.Tags) > 20 {
+		return fmt.Errorf("tags must not exceed 20 values")
+	}
+	seen := make(map[string]bool, len(input.Tags))
+	tags := make([]string, 0, len(input.Tags))
+	for _, value := range input.Tags {
+		tag := normalizeSearchValue(value)
+		if runeLength(tag) < 1 || runeLength(tag) > 50 {
+			return fmt.Errorf("tags contains a value outside 1 to 50 characters")
+		}
+		if !seen[tag] {
+			seen[tag] = true
+			tags = append(tags, tag)
+		}
+	}
+	input.Tags = tags
+	return nil
+}
+
+func validateFinancialContext(context *EventFinancialContextInput) error {
+	if context == nil {
+		return nil
+	}
+	if !currencyPattern.MatchString(context.Currency) {
+		return fmt.Errorf("financialContext.currency must be a three-letter uppercase code")
+	}
+	amounts := []*int64{context.TotalValueMinor, context.AllowanceMinor, context.CoveredByOthersMinor, context.PersonalPaymentMinor}
+	hasAmount := false
+	for _, amount := range amounts {
+		if amount == nil {
+			continue
+		}
+		hasAmount = true
+		if *amount < 0 {
+			return fmt.Errorf("financialContext amounts must not be negative")
+		}
+	}
+	if !hasAmount {
+		return fmt.Errorf("financialContext must contain at least one amount")
+	}
+	return nil
+}
+
+func validateEventAttributes(attributes map[string]any) error {
+	if len(attributes) > 32 {
+		return fmt.Errorf("attributes must not exceed 32 fields")
+	}
+	for key, value := range attributes {
+		if strings.TrimSpace(key) != key || key == "" || runeLength(key) > 64 || strings.HasPrefix(key, "$") || strings.Contains(key, ".") {
+			return fmt.Errorf("attribute key %q is invalid", key)
+		}
+		if err := validateEventAttributeValue(value); err != nil {
+			return fmt.Errorf("attribute %q: %w", key, err)
+		}
+	}
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		return fmt.Errorf("attributes must contain JSON-compatible values")
+	}
+	if len(encoded) > 16*1024 {
+		return fmt.Errorf("attributes must not exceed 16384 encoded bytes")
+	}
+	return nil
+}
+
+func validateEventAttributeValue(value any) error {
+	switch typed := value.(type) {
+	case nil, bool, int, int32, int64, float32, float64, json.Number:
+		return nil
+	case string:
+		if runeLength(typed) > 1000 {
+			return fmt.Errorf("string values must not exceed 1000 characters")
+		}
+		return nil
+	case []any:
+		if len(typed) > 20 {
+			return fmt.Errorf("arrays must not exceed 20 values")
+		}
+		for _, item := range typed {
+			switch item.(type) {
+			case map[string]any, []any:
+				return fmt.Errorf("nested objects and arrays are not allowed")
+			}
+			if err := validateEventAttributeValue(item); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []string:
+		if len(typed) > 20 {
+			return fmt.Errorf("arrays must not exceed 20 values")
+		}
+		for _, item := range typed {
+			if err := validateEventAttributeValue(item); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("values must be JSON scalars or scalar arrays")
+	}
+}
+
+func normalizeDisplay(value string) string {
+	return strings.Join(strings.Fields(norm.NFKC.String(value)), " ")
+}
+
+func normalizeSearchValue(value string) string {
+	return strings.ToLower(normalizeDisplay(value))
+}
+
+func eventSearchTokens(values ...string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0)
+	for _, value := range values {
+		for _, token := range strings.FieldsFunc(normalizeSearchValue(value), func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)
+		}) {
+			if token != "" && !seen[token] {
+				seen[token] = true
+				result = append(result, token)
+			}
+		}
+	}
+	return result
+}
+
+func runeLength(value string) int { return utf8.RuneCountInString(value) }
 
 func NormalizeDescriptor(value *string) *string {
 	if value == nil {

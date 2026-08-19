@@ -105,6 +105,69 @@ func (server *Server) createTransaction(writer http.ResponseWriter, request *htt
 	writeWriteResult(writer, status, result)
 }
 
+func (server *Server) createEvent(writer http.ResponseWriter, request *http.Request) {
+	var input memory.EventInput
+	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {
+		server.handleError(writer, memory.Invalid(err))
+		return
+	}
+	result, err := server.application.CreateEvent(request.Context(), input)
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	writeWriteResult(writer, status, result)
+}
+
+func (server *Server) getEvent(writer http.ResponseWriter, request *http.Request) {
+	document, err := server.application.GetEvent(request.Context(), request.PathValue("id"))
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	writeDocument(writer, http.StatusOK, document)
+}
+
+func (server *Server) searchEvents(writer http.ResponseWriter, request *http.Request) {
+	var input memory.EventSearchInput
+	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {
+		server.handleError(writer, memory.Invalid(err))
+		return
+	}
+	documents, err := server.application.SearchEvents(request.Context(), input)
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	writeDocuments(writer, http.StatusOK, documents)
+}
+
+func (server *Server) updateEvent(writer http.ResponseWriter, request *http.Request) {
+	var input memory.EventUpdateInput
+	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {
+		server.handleError(writer, memory.Invalid(err))
+		return
+	}
+	document, err := server.application.UpdateEvent(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	writeDocument(writer, http.StatusOK, document)
+}
+
+func (server *Server) deleteEvent(writer http.ResponseWriter, request *http.Request) {
+	if err := server.application.DeleteEvent(request.Context(), request.PathValue("id")); err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
 func (server *Server) createReminder(writer http.ResponseWriter, request *http.Request) {
 	var input memory.ReminderInput
 	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {

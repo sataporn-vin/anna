@@ -5,6 +5,7 @@ Anna is a single-user personal-memory backend. Version one provides:
 - authenticated REST endpoints;
 - constrained MongoDB reads, writes, and aggregations for flexible collections;
 - managed finance and reminder collections with stricter validation;
+- a managed event/life-log collection with guarded custom attributes;
 - integer minor-unit money;
 - split `occurredOn` and optional `occurredAt` date semantics;
 - portable Docker deployment for local use, Railway, and later self-hosting.
@@ -106,6 +107,49 @@ curl --fail-with-body \
 
 Generic writes to all managed collections are rejected. Generic reads and safe aggregations remain available.
 
+## Event / life log
+
+Record a completed event that is worth remembering but is not itself a financial transaction:
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $ANNA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "requestId":"d19f46f2-f760-4764-89ad-a22ae819ce6e",
+    "occurredOn":"2026-08-19",
+    "timezone":"Asia/Bangkok",
+    "title":"Company monthly dinner at Sushiro",
+    "eventType":"company-event",
+    "location":"Sushiro Theprak branch",
+    "tags":["company","dinner","sushiro"],
+    "financialContext":{
+      "currency":"THB",
+      "totalValueMinor":45100,
+      "allowanceMinor":50000,
+      "coveredByOthersMinor":45100,
+      "personalPaymentMinor":0
+    },
+    "attributes":{"restaurantChain":"Sushiro"},
+    "rawText":"Company monthly dinner at Sushiro. The company paid the full bill."
+  }' \
+  http://localhost:8080/v1/events
+```
+
+The amounts under `financialContext` are descriptive and never affect transaction totals or account balances. If the user also paid personal money, create the transaction first and include its returned object identifier in `relatedTransactionIds`.
+
+Search uses normalized exact fields and tokens; it is not fuzzy or semantic search:
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $ANNA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"sushiro","sort":"occurred_desc","limit":1}' \
+  http://localhost:8080/v1/events/search
+```
+
+`attributes` accepts up to 32 event-specific fields containing short JSON scalars or scalar arrays. Core event fields remain strictly validated, and arbitrary attributes are not automatically indexed.
+
 ## Recurring reminders
 
 Create a reminder rule for wearing a company uniform every Monday and Friday. Its preparation step starts two days before each occurrence:
@@ -155,6 +199,11 @@ Use phase `occurrence` to complete the wear reminder itself. Completions apply o
 | `POST` | `/v1/collections` | Create a flexible collection |
 | `POST` | `/v1/accounts` | Create a managed account |
 | `POST` | `/v1/transactions` | Create an idempotent, validated transaction |
+| `POST` | `/v1/events` | Create an idempotent, validated completed event |
+| `GET` | `/v1/events/{id}` | Retrieve one event |
+| `POST` | `/v1/events/search` | Search events with structured filters |
+| `PATCH` | `/v1/events/{id}` | Correct mutable event fields |
+| `DELETE` | `/v1/events/{id}` | Delete an event without changing linked transactions |
 | `POST` | `/v1/reminders` | Create a managed recurring reminder rule |
 | `GET` | `/v1/reminders/digest` | Retrieve incomplete reminders for a local date |
 | `POST` | `/v1/reminders/completions` | Complete one phase of one reminder occurrence |
@@ -202,3 +251,12 @@ go test ./...
 docker compose config
 docker build -t anna-memory-api:test .
 ```
+
+The MongoDB integration test creates and removes a uniquely named temporary database when `MONGODB_TEST_URI` is set:
+
+```sh
+cd /Users/sataporn.vin/bag/codex/anna
+MONGODB_TEST_URI='mongodb://localhost:27017' go test ./internal/mongostore -run TestManagedEventsIntegration
+```
+
+An existing unvalidated `events` collection requires a one-time `collMod` upgrade. Startup rejects incompatible legacy event documents. The database user performing that upgrade needs `collMod` permission; newly created databases receive the validator during bootstrap and do not need the extra permission.

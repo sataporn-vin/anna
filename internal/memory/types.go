@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -103,6 +104,48 @@ type TransactionInput struct {
 	Note            *string    `json:"note,omitempty"`
 	RawText         *string    `json:"rawText,omitempty"`
 }
+
+type EventFinancialContextInput struct {
+	Currency             string `json:"currency" bson:"currency"`
+	TotalValueMinor      *int64 `json:"totalValueMinor,omitempty" bson:"totalValueMinor"`
+	AllowanceMinor       *int64 `json:"allowanceMinor,omitempty" bson:"allowanceMinor"`
+	CoveredByOthersMinor *int64 `json:"coveredByOthersMinor,omitempty" bson:"coveredByOthersMinor"`
+	PersonalPaymentMinor *int64 `json:"personalPaymentMinor,omitempty" bson:"personalPaymentMinor"`
+}
+
+type EventInput struct {
+	RequestID             string                      `json:"requestId"`
+	OccurredOn            string                      `json:"occurredOn"`
+	OccurredAt            *time.Time                  `json:"occurredAt,omitempty"`
+	Timezone              string                      `json:"timezone,omitempty"`
+	Title                 string                      `json:"title"`
+	EventType             string                      `json:"eventType,omitempty"`
+	Location              *string                     `json:"location,omitempty"`
+	People                []string                    `json:"people,omitempty"`
+	Description           *string                     `json:"description,omitempty"`
+	Tags                  []string                    `json:"tags,omitempty"`
+	FinancialContext      *EventFinancialContextInput `json:"financialContext,omitempty"`
+	RelatedTransactionIDs []string                    `json:"relatedTransactionIds,omitempty"`
+	Attributes            map[string]any              `json:"attributes,omitempty"`
+	RawText               string                      `json:"rawText"`
+}
+
+type EventSearchInput struct {
+	OccurredFrom string     `json:"occurredFrom,omitempty"`
+	OccurredTo   string     `json:"occurredTo,omitempty"`
+	CreatedFrom  *time.Time `json:"createdFrom,omitempty"`
+	CreatedTo    *time.Time `json:"createdTo,omitempty"`
+	EventTypes   []string   `json:"eventTypes,omitempty"`
+	Location     string     `json:"location,omitempty"`
+	People       []string   `json:"people,omitempty"`
+	Tags         []string   `json:"tags,omitempty"`
+	Text         string     `json:"text,omitempty"`
+	Sort         string     `json:"sort,omitempty"`
+	Limit        int64      `json:"limit,omitempty"`
+	SearchTokens []string   `json:"-"`
+}
+
+type EventUpdateInput map[string]json.RawMessage
 
 type CollectionInfo struct {
 	Name    string `json:"name"`

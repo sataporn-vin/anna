@@ -26,6 +26,11 @@ type Application interface {
 	Aggregate(context.Context, memory.AggregateInput) ([]bson.M, error)
 	CreateAccount(context.Context, memory.AccountInput) (memory.AccountInfo, bool, error)
 	CreateTransaction(context.Context, memory.TransactionInput) (memory.WriteResult, error)
+	CreateEvent(context.Context, memory.EventInput) (memory.WriteResult, error)
+	GetEvent(context.Context, string) (bson.M, error)
+	SearchEvents(context.Context, memory.EventSearchInput) ([]bson.M, error)
+	UpdateEvent(context.Context, string, memory.EventUpdateInput) (bson.M, error)
+	DeleteEvent(context.Context, string) error
 	CreateReminder(context.Context, memory.ReminderInput) (memory.ReminderInfo, bool, error)
 	ReminderDigest(context.Context, string) (memory.ReminderDigest, error)
 	CompleteReminder(context.Context, memory.ReminderCompletionInput) (memory.WriteResult, error)
@@ -53,6 +58,11 @@ func New(application Application, token string, maxBody int64, logger *slog.Logg
 	mux.Handle("POST /v1/collections", server.authenticate(http.HandlerFunc(server.createCollection)))
 	mux.Handle("POST /v1/accounts", server.authenticate(http.HandlerFunc(server.createAccount)))
 	mux.Handle("POST /v1/transactions", server.authenticate(http.HandlerFunc(server.createTransaction)))
+	mux.Handle("POST /v1/events", server.authenticate(http.HandlerFunc(server.createEvent)))
+	mux.Handle("GET /v1/events/{id}", server.authenticate(http.HandlerFunc(server.getEvent)))
+	mux.Handle("POST /v1/events/search", server.authenticate(http.HandlerFunc(server.searchEvents)))
+	mux.Handle("PATCH /v1/events/{id}", server.authenticate(http.HandlerFunc(server.updateEvent)))
+	mux.Handle("DELETE /v1/events/{id}", server.authenticate(http.HandlerFunc(server.deleteEvent)))
 	mux.Handle("POST /v1/reminders", server.authenticate(http.HandlerFunc(server.createReminder)))
 	mux.Handle("GET /v1/reminders/digest", server.authenticate(http.HandlerFunc(server.reminderDigest)))
 	mux.Handle("POST /v1/reminders/completions", server.authenticate(http.HandlerFunc(server.completeReminder)))
@@ -109,7 +119,7 @@ func (server *Server) handleError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, memory.ErrInactiveAccount):
 		writeError(writer, http.StatusUnprocessableEntity, "inactive_account", "account does not exist or is inactive")
 	case errors.Is(err, memory.ErrIdempotencyConflict):
-		writeError(writer, http.StatusConflict, "idempotency_conflict", "requestId was already used for different transaction content")
+		writeError(writer, http.StatusConflict, "idempotency_conflict", "requestId was already used for different content")
 	case errors.Is(err, memory.ErrAccountExists):
 		writeError(writer, http.StatusConflict, "account_exists", "an account with this id already exists")
 	case errors.Is(err, memory.ErrReminderExists):

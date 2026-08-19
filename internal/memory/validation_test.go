@@ -98,3 +98,61 @@ func TestValidateReminder(t *testing.T) {
 		t.Fatal("expected duplicate weekday to be rejected")
 	}
 }
+
+func TestValidateEventAppliesDefaultsAndPreservesRawText(t *testing.T) {
+	rawText := "  today มีกินเลี้ยงประจำเดือนบริษัท  "
+	input := EventInput{
+		RequestID:  "d19f46f2-f760-4764-89ad-a22ae819ce6e",
+		OccurredOn: "2026-08-19",
+		Title:      "  Company   dinner  ",
+		Tags:       []string{" Company ", "DINNER", "company"},
+		Attributes: map[string]any{"restaurantChain": "Sushiro", "guests": []any{"Nok", "Ann"}},
+		RawText:    rawText,
+	}
+	if err := ValidateEvent(&input, "Asia/Bangkok", time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("expected event to be valid: %v", err)
+	}
+	if input.Timezone != "Asia/Bangkok" || input.EventType != "general-memory" || input.Title != "Company dinner" {
+		t.Fatalf("event defaults or normalization were not applied: %#v", input)
+	}
+	if input.RawText != rawText {
+		t.Fatalf("raw text changed: %q", input.RawText)
+	}
+	if len(input.Tags) != 2 || input.Tags[0] != "company" || input.Tags[1] != "dinner" {
+		t.Fatalf("tags were not normalized: %#v", input.Tags)
+	}
+}
+
+func TestValidateEventRejectsUnsafeOrFinanciallyIncompleteInput(t *testing.T) {
+	positive := int64(12000)
+	futureInstant := time.Date(2026, 8, 19, 13, 0, 0, 0, time.UTC)
+	base := EventInput{
+		RequestID:  "d19f46f2-f760-4764-89ad-a22ae819ce6e",
+		OccurredOn: "2026-08-19",
+		Title:      "Company dinner",
+		RawText:    "Company dinner.",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*EventInput)
+		want   string
+	}{
+		{name: "future event", mutate: func(input *EventInput) { input.OccurredOn = "2026-08-20" }, want: "future"},
+		{name: "future event time", mutate: func(input *EventInput) { input.OccurredAt = &futureInstant }, want: "future"},
+		{name: "unsafe attribute key", mutate: func(input *EventInput) { input.Attributes = map[string]any{"$secret": true} }, want: "attribute key"},
+		{name: "nested attribute", mutate: func(input *EventInput) { input.Attributes = map[string]any{"nested": map[string]any{"value": true}} }, want: "JSON scalars"},
+		{name: "unlinked payment", mutate: func(input *EventInput) {
+			input.FinancialContext = &EventFinancialContextInput{Currency: "THB", PersonalPaymentMinor: &positive}
+		}, want: "relatedTransactionIds"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := base
+			test.mutate(&input)
+			err := ValidateEvent(&input, "Asia/Bangkok", time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected error containing %q, got %v", test.want, err)
+			}
+		})
+	}
+}

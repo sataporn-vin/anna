@@ -61,7 +61,7 @@ func (store *Store) EnsureBootstrap(ctx context.Context) error {
 		{name: "transactions", validator: transactionValidator()},
 		{name: "memories"},
 		{name: "people"},
-		{name: "events"},
+		{name: "events", validator: eventValidator()},
 		{name: "measurements"},
 		{name: "documents"},
 		{name: "reminders", validator: reminderValidator()},
@@ -69,6 +69,11 @@ func (store *Store) EnsureBootstrap(ctx context.Context) error {
 	}
 	for _, collection := range collections {
 		if exists[collection.name] {
+			if collection.name == "events" {
+				if err := store.ensureExistingEventValidator(ctx); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		createOptions := options.CreateCollection()
@@ -82,6 +87,37 @@ func (store *Store) EnsureBootstrap(ctx context.Context) error {
 
 	if err := store.ensureIndexes(ctx); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (store *Store) ensureExistingEventValidator(ctx context.Context) error {
+	specifications, err := store.database.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: "events"}})
+	if err != nil {
+		return fmt.Errorf("inspect events collection validator: %w", err)
+	}
+	if len(specifications) != 1 {
+		return fmt.Errorf("inspect events collection validator: expected one events collection")
+	}
+	if _, err := specifications[0].Options.LookupErr("validator"); err == nil {
+		return nil
+	}
+	schema := eventValidator()["$jsonSchema"]
+	invalid, err := store.database.Collection("events").CountDocuments(ctx, bson.D{{Key: "$nor", Value: bson.A{bson.D{{Key: "$jsonSchema", Value: schema}}}}}, options.Count().SetLimit(1))
+	if err != nil {
+		return fmt.Errorf("validate existing events before migration: %w", err)
+	}
+	if invalid != 0 {
+		return fmt.Errorf("events collection contains documents incompatible with schema version 1; migrate or remove them before startup")
+	}
+	command := bson.D{
+		{Key: "collMod", Value: "events"},
+		{Key: "validator", Value: eventValidator()},
+		{Key: "validationLevel", Value: "strict"},
+		{Key: "validationAction", Value: "error"},
+	}
+	if err := store.database.RunCommand(ctx, command).Err(); err != nil {
+		return fmt.Errorf("apply events collection validator (the database user needs collMod permission for this one-time upgrade): %w", err)
 	}
 	return nil
 }
@@ -229,6 +265,134 @@ func (store *Store) CreateTransaction(ctx context.Context, document bson.D, requ
 	return existing.ID, false, nil
 }
 
+func (store *Store) TransactionExists(ctx context.Context, id bson.ObjectID) (bool, error) {
+	count, err := store.database.Collection("transactions").CountDocuments(ctx, bson.D{{Key: "_id", Value: id}}, options.Count().SetLimit(1))
+	if err != nil {
+		return false, fmt.Errorf("look up transaction: %w", err)
+	}
+	return count == 1, nil
+}
+
+func (store *Store) CreateEvent(ctx context.Context, document bson.D, requestID, requestHash string) (any, bool, error) {
+	result, err := store.database.Collection("events").InsertOne(ctx, document)
+	if err == nil {
+		return result.InsertedID, true, nil
+	}
+	if !mongo.IsDuplicateKeyError(err) {
+		return nil, false, fmt.Errorf("create event: %w", err)
+	}
+	var existing struct {
+		ID     any `bson:"_id"`
+		Source struct {
+			RequestHash string `bson:"requestHash"`
+		} `bson:"source"`
+	}
+	findErr := store.database.Collection("events").FindOne(ctx, bson.D{{Key: "source.requestId", Value: requestID}}).Decode(&existing)
+	if findErr != nil {
+		return nil, false, fmt.Errorf("resolve duplicate event: %w", findErr)
+	}
+	if existing.Source.RequestHash != requestHash {
+		return nil, false, memory.ErrIdempotencyConflict
+	}
+	return existing.ID, false, nil
+}
+
+func (store *Store) EventByID(ctx context.Context, id bson.ObjectID) (bson.M, error) {
+	var document bson.M
+	err := store.database.Collection("events").FindOne(ctx, bson.D{{Key: "_id", Value: id}}).Decode(&document)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, memory.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find event: %w", err)
+	}
+	return document, nil
+}
+
+func (store *Store) SearchEvents(ctx context.Context, input memory.EventSearchInput) ([]bson.M, error) {
+	filter := bson.D{}
+	if input.OccurredFrom != "" || input.OccurredTo != "" {
+		rangeFilter := bson.D{}
+		if input.OccurredFrom != "" {
+			rangeFilter = append(rangeFilter, bson.E{Key: "$gte", Value: input.OccurredFrom})
+		}
+		if input.OccurredTo != "" {
+			rangeFilter = append(rangeFilter, bson.E{Key: "$lte", Value: input.OccurredTo})
+		}
+		filter = append(filter, bson.E{Key: "occurredOn", Value: rangeFilter})
+	}
+	if input.CreatedFrom != nil || input.CreatedTo != nil {
+		rangeFilter := bson.D{}
+		if input.CreatedFrom != nil {
+			rangeFilter = append(rangeFilter, bson.E{Key: "$gte", Value: input.CreatedFrom.UTC()})
+		}
+		if input.CreatedTo != nil {
+			rangeFilter = append(rangeFilter, bson.E{Key: "$lt", Value: input.CreatedTo.UTC()})
+		}
+		filter = append(filter, bson.E{Key: "createdAt", Value: rangeFilter})
+	}
+	if len(input.EventTypes) > 0 {
+		filter = append(filter, bson.E{Key: "eventType", Value: bson.D{{Key: "$in", Value: input.EventTypes}}})
+	}
+	if input.Location != "" {
+		filter = append(filter, bson.E{Key: "locationNormalized", Value: input.Location})
+	}
+	if len(input.People) > 0 {
+		filter = append(filter, bson.E{Key: "peopleNormalized", Value: bson.D{{Key: "$all", Value: input.People}}})
+	}
+	if len(input.Tags) > 0 {
+		filter = append(filter, bson.E{Key: "tags", Value: bson.D{{Key: "$all", Value: input.Tags}}})
+	}
+	if len(input.SearchTokens) > 0 {
+		filter = append(filter, bson.E{Key: "searchTokens", Value: bson.D{{Key: "$all", Value: input.SearchTokens}}})
+	}
+	sortDocument := bson.D{{Key: "occurredOn", Value: -1}, {Key: "_id", Value: -1}}
+	if input.Sort == "occurred_asc" {
+		sortDocument = bson.D{{Key: "occurredOn", Value: 1}, {Key: "_id", Value: 1}}
+	} else if input.Sort == "created_desc" {
+		sortDocument = bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}
+	}
+	cursor, err := store.database.Collection("events").Find(ctx, filter, options.Find().SetLimit(input.Limit).SetSort(sortDocument))
+	if err != nil {
+		return nil, fmt.Errorf("search events: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var documents []bson.M
+	if err := cursor.All(ctx, &documents); err != nil {
+		return nil, fmt.Errorf("decode events: %w", err)
+	}
+	return documents, nil
+}
+
+func (store *Store) DeleteEvent(ctx context.Context, id bson.ObjectID) (bool, error) {
+	result, err := store.database.Collection("events").DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	if err != nil {
+		return false, fmt.Errorf("delete event: %w", err)
+	}
+	return result.DeletedCount == 1, nil
+}
+
+func (store *Store) UpdateEvent(ctx context.Context, id bson.ObjectID, fields bson.D, unsetOccurredAt bool) (bson.M, error) {
+	update := bson.D{{Key: "$set", Value: fields}}
+	if unsetOccurredAt {
+		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "occurredAt", Value: ""}}})
+	}
+	var document bson.M
+	err := store.database.Collection("events").FindOneAndUpdate(
+		ctx,
+		bson.D{{Key: "_id", Value: id}},
+		update,
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&document)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, memory.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update event: %w", err)
+	}
+	return document, nil
+}
+
 func (store *Store) CreateReminder(ctx context.Context, document bson.D) (bool, error) {
 	_, err := store.database.Collection("reminders").InsertOne(ctx, document)
 	if mongo.IsDuplicateKeyError(err) {
@@ -344,6 +508,23 @@ func (store *Store) ensureIndexes(ctx context.Context) error {
 	if _, err := store.database.Collection("transactions").Indexes().CreateMany(ctx, transactionIndexes); err != nil {
 		return fmt.Errorf("create transaction indexes: %w", err)
 	}
+	eventIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{{Key: "source.requestId", Value: 1}},
+			Options: options.Index().SetName("uniq_event_request").SetUnique(true).SetPartialFilterExpression(
+				bson.D{{Key: "source.type", Value: "direct_entry"}},
+			),
+		},
+		{Keys: bson.D{{Key: "occurredOn", Value: -1}}, Options: options.Index().SetName("event_date")},
+		{Keys: bson.D{{Key: "eventType", Value: 1}, {Key: "occurredOn", Value: -1}}, Options: options.Index().SetName("event_type_date")},
+		{Keys: bson.D{{Key: "tags", Value: 1}, {Key: "occurredOn", Value: -1}}, Options: options.Index().SetName("event_tags_date")},
+		{Keys: bson.D{{Key: "locationNormalized", Value: 1}, {Key: "occurredOn", Value: -1}}, Options: options.Index().SetName("event_location_date")},
+		{Keys: bson.D{{Key: "searchTokens", Value: 1}, {Key: "occurredOn", Value: -1}}, Options: options.Index().SetName("event_search_date")},
+		{Keys: bson.D{{Key: "createdAt", Value: -1}}, Options: options.Index().SetName("event_created")},
+	}
+	if _, err := store.database.Collection("events").Indexes().CreateMany(ctx, eventIndexes); err != nil {
+		return fmt.Errorf("create event indexes: %w", err)
+	}
 	reminderIndexes := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "active", Value: 1}}, Options: options.Index().SetName("active_reminders")},
 	}
@@ -445,6 +626,86 @@ func transactionValidator() bson.M {
 					"rawLine":       bson.M{"bsonType": "string", "maxLength": 2000},
 					"parserVersion": bson.M{"bsonType": "string", "maxLength": 100},
 				},
+			},
+			"createdAt": bson.M{"bsonType": "date"},
+			"updatedAt": bson.M{"bsonType": "date"},
+		},
+	}}
+}
+
+func eventValidator() bson.M {
+	nullableString := bson.M{"bsonType": bson.A{"string", "null"}}
+	nullableMoney := bson.M{"bsonType": bson.A{"int", "long", "null"}, "minimum": 0}
+	attributeScalarTypes := bson.A{"string", "bool", "int", "long", "double", "decimal", "null"}
+	return bson.M{"$jsonSchema": bson.M{
+		"bsonType":             "object",
+		"additionalProperties": false,
+		"required": bson.A{
+			"_id", "schemaVersion", "occurredOn", "timezone", "title", "eventType", "location",
+			"locationNormalized", "people", "peopleNormalized", "description", "tags", "financialContext",
+			"relatedTransactionIds", "attributes", "source", "searchTokens", "createdAt", "updatedAt",
+		},
+		"properties": bson.M{
+			"_id":           bson.M{"bsonType": "objectId"},
+			"schemaVersion": bson.M{"bsonType": bson.A{"int", "long"}, "minimum": 1, "maximum": 1},
+			"occurredOn":    bson.M{"bsonType": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+			"occurredAt":    bson.M{"bsonType": "date"},
+			"timezone":      bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
+			"title":         bson.M{"bsonType": "string", "minLength": 1, "maxLength": 300},
+			"eventType": bson.M{"enum": bson.A{
+				"company-event", "social-event", "meal-gathering", "appointment-completed", "travel", "celebration",
+				"personal-milestone", "work-milestone", "health-fitness", "pet", "family", "general-memory",
+			}},
+			"location":           nullableString,
+			"locationNormalized": nullableString,
+			"people": bson.M{
+				"bsonType": "array", "maxItems": 50,
+				"items": bson.M{"bsonType": "string", "minLength": 1, "maxLength": 200},
+			},
+			"peopleNormalized": bson.M{
+				"bsonType": "array", "maxItems": 50,
+				"items": bson.M{"bsonType": "string", "minLength": 1, "maxLength": 200},
+			},
+			"description": bson.M{"bsonType": bson.A{"string", "null"}, "maxLength": 5000},
+			"tags": bson.M{
+				"bsonType": "array", "maxItems": 20, "uniqueItems": true,
+				"items": bson.M{"bsonType": "string", "minLength": 1, "maxLength": 50},
+			},
+			"financialContext": bson.M{
+				"bsonType": bson.A{"object", "null"}, "additionalProperties": false,
+				"required": bson.A{"currency", "totalValueMinor", "allowanceMinor", "coveredByOthersMinor", "personalPaymentMinor"},
+				"properties": bson.M{
+					"currency":             bson.M{"bsonType": "string", "pattern": "^[A-Z]{3}$"},
+					"totalValueMinor":      nullableMoney,
+					"allowanceMinor":       nullableMoney,
+					"coveredByOthersMinor": nullableMoney,
+					"personalPaymentMinor": nullableMoney,
+				},
+			},
+			"relatedTransactionIds": bson.M{
+				"bsonType": "array", "maxItems": 20, "uniqueItems": true,
+				"items": bson.M{"bsonType": "objectId"},
+			},
+			"attributes": bson.M{
+				"bsonType": bson.A{"object", "null"}, "maxProperties": 32,
+				"additionalProperties": bson.M{"anyOf": bson.A{
+					bson.M{"bsonType": attributeScalarTypes, "maxLength": 1000},
+					bson.M{"bsonType": "array", "maxItems": 20, "items": bson.M{"bsonType": attributeScalarTypes, "maxLength": 1000}},
+				}},
+			},
+			"source": bson.M{
+				"bsonType": "object", "additionalProperties": false,
+				"required": bson.A{"type", "requestId", "requestHash", "rawText"},
+				"properties": bson.M{
+					"type":        bson.M{"enum": bson.A{"direct_entry"}},
+					"requestId":   bson.M{"bsonType": "string", "minLength": 36, "maxLength": 36},
+					"requestHash": bson.M{"bsonType": "string", "pattern": "^[a-f0-9]{64}$"},
+					"rawText":     bson.M{"bsonType": "string", "minLength": 1, "maxLength": 5000},
+				},
+			},
+			"searchTokens": bson.M{
+				"bsonType": "array", "maxItems": 100, "uniqueItems": true,
+				"items": bson.M{"bsonType": "string", "minLength": 1, "maxLength": 500},
 			},
 			"createdAt": bson.M{"bsonType": "date"},
 			"updatedAt": bson.M{"bsonType": "date"},

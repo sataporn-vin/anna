@@ -91,7 +91,7 @@ The client may create additional collections through the memory service. Collect
 
 The service determines accessibility from the bootstrap list and MongoDB's collection catalog after filtering out reserved names. The dedicated application user is the only non-administrative writer to this database. MongoDB administrative operations remain inaccessible.
 
-`accounts`, `transactions`, `reminders`, and `reminder_completions` are managed collections with strict MongoDB validation and application-level rules. User-created collections remain flexible except for the service-wide safety restrictions.
+`accounts`, `transactions`, `events`, `reminders`, and `reminder_completions` are managed collections with strict MongoDB validation and application-level rules. User-created collections remain flexible except for the service-wide safety restrictions. Managed events also provide a bounded `attributes` object for event-specific JSON scalars and scalar arrays; these attributes never affect finance behavior or receive automatic indexes.
 
 ### Example transaction
 
@@ -460,6 +460,11 @@ GET  /v1/collections
 POST /v1/collections
 POST /v1/accounts
 POST /v1/transactions
+POST /v1/events
+GET  /v1/events/{id}
+POST /v1/events/search
+PATCH /v1/events/{id}
+DELETE /v1/events/{id}
 POST /v1/reminders
 GET  /v1/reminders/digest
 POST /v1/reminders/completions

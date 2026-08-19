@@ -1,0 +1,743 @@
+openapi: 3.1.0
+info:
+  title: Anna Personal Memory
+  description: >-
+    Focused actions for recording personal transactions, completed life-log
+    events, and recurring reminders. Dates are local calendar dates in
+    YYYY-MM-DD format.
+  version: 1.0.0
+servers:
+  - url: https://anna-production-bfb9.up.railway.app
+security:
+  - bearerAuth: []
+paths:
+  /v1/reminders/digest:
+    get:
+      operationId: getReminderDigest
+      summary: Get incomplete reminders for a date
+      description: >-
+        Retrieve the morning digest. Omit on to use today's date in
+        Asia/Bangkok. This operation does not change stored data.
+      parameters:
+        - name: "on"
+          in: query
+          required: false
+          description: Local calendar date. Omit this parameter for today.
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Incomplete reminder steps for the requested date.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReminderDigestResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/reminders:
+    post:
+      operationId: createReminder
+      summary: Create a recurring reminder
+      description: >-
+        Create one recurring reminder rule. Ask the user to resolve ambiguous
+        weekdays, start date, timezone, or preparation lead time before calling.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReminderRequest"
+      responses:
+        "200":
+          description: The reminder already existed and was returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateReminderResponse"
+        "201":
+          description: The reminder was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateReminderResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/reminders/completions:
+    post:
+      operationId: completeReminder
+      summary: Complete one reminder step
+      description: >-
+        Complete one phase of one dated reminder occurrence. occurrenceOn is
+        the scheduled occurrence date, including when completing preparation
+        before that date. Ask if the occurrence is ambiguous.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteReminderRequest"
+      responses:
+        "200":
+          description: This completion already existed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WriteResponse"
+        "201":
+          description: The reminder step was completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WriteResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/transactions:
+    post:
+      operationId: recordTransaction
+      summary: Record a financial transaction
+      description: >-
+        Record one confirmed financial event. amountMinor uses the currency's
+        minor unit, so THB 205 is 20500. Generate a new UUID requestId for a new
+        transaction and reuse it only when retrying the identical request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTransactionRequest"
+      responses:
+        "200":
+          description: The identical idempotent transaction already existed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WriteResponse"
+        "201":
+          description: The transaction was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WriteResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/events:
+    post:
+      operationId: recordEvent
+      summary: Record one completed life-log event
+      description: >-
+        Record a completed occurrence worth remembering. Monetary context is
+        informational and never changes financial totals. Generate a new UUID
+        requestId for a new event and reuse it only when retrying the identical
+        request. Do not use this operation for a future appointment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEventRequest"
+      responses:
+        "200":
+          description: The identical idempotent event already existed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WriteResponse"
+        "201":
+          description: The event was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WriteResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/events/search:
+    post:
+      operationId: searchEvents
+      summary: Search completed life-log events
+      description: >-
+        Search with at least one structured filter. Resolve relative dates such
+        as last Friday into absolute local dates before calling. Text search is
+        normalized token matching, not fuzzy or semantic search.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventSearchRequest"
+      responses:
+        "200":
+          description: Matching events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventSearchResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/events/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EventId"
+    get:
+      operationId: getEvent
+      summary: Get one event
+      responses:
+        "200":
+          description: The event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    patch:
+      operationId: updateEvent
+      summary: Correct an event
+      description: >-
+        Apply merge-patch semantics to mutable event fields. Null clears an
+        optional field. Server-owned fields and original source text cannot be
+        changed.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/UpdateEventRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEventRequest"
+      responses:
+        "200":
+          description: The updated event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    delete:
+      operationId: deleteEvent
+      summary: Delete an event
+      description: Delete only the event; linked transactions are unchanged.
+      responses:
+        "204":
+          description: The event was deleted.
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  responses:
+    ErrorResponse:
+      description: The request failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  parameters:
+    EventId:
+      name: id
+      in: path
+      required: true
+      description: Event MongoDB object identifier.
+      schema:
+        type: string
+        pattern: "^[a-fA-F0-9]{24}$"
+
+  schemas:
+    ReminderDigestResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReminderDigestItem"
+        meta:
+          type: object
+          required: [count, "on"]
+          properties:
+            count:
+              type: integer
+            "on":
+              type: string
+              format: date
+
+    ReminderDigestItem:
+      type: object
+      required: [reminderId, occurrenceOn, phase, title]
+      properties:
+        reminderId:
+          type: string
+        occurrenceOn:
+          type: string
+          format: date
+        phase:
+          type: string
+          enum: [preparation, occurrence]
+        title:
+          type: string
+
+    CreateReminderRequest:
+      type: object
+      additionalProperties: false
+      required: [id, title, weekdays]
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          maxLength: 100
+          description: Stable lowercase kebab-case identifier.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        timezone:
+          type: string
+          default: Asia/Bangkok
+          description: IANA timezone.
+        weekdays:
+          type: array
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - monday
+              - tuesday
+              - wednesday
+              - thursday
+              - friday
+              - saturday
+              - sunday
+        startsOn:
+          type: string
+          format: date
+          description: Omit to start today in the reminder timezone.
+        preparation:
+          $ref: "#/components/schemas/ReminderPreparation"
+
+    ReminderPreparation:
+      type: object
+      additionalProperties: false
+      required: [title, leadDays]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        leadDays:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: >-
+            Start showing preparation this many days before the occurrence and
+            repeat it daily through the day before while incomplete.
+
+    CreateReminderResponse:
+      type: object
+      required: [created, data]
+      properties:
+        created:
+          type: boolean
+        data:
+          type: object
+          required: [id, title, timezone, weekdays, startsOn, active]
+          properties:
+            id:
+              type: string
+            title:
+              type: string
+            timezone:
+              type: string
+            weekdays:
+              type: array
+              items:
+                type: string
+            startsOn:
+              type: string
+              format: date
+            preparation:
+              $ref: "#/components/schemas/ReminderPreparation"
+            active:
+              type: boolean
+
+    CompleteReminderRequest:
+      type: object
+      additionalProperties: false
+      required: [reminderId, occurrenceOn, phase]
+      properties:
+        reminderId:
+          type: string
+          description: Stable reminder rule identifier.
+        occurrenceOn:
+          type: string
+          format: date
+          description: Scheduled date of the reminder occurrence.
+        phase:
+          type: string
+          enum: [preparation, occurrence]
+
+    CreateTransactionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - requestId
+        - occurredOn
+        - amountMinor
+        - transactionKind
+        - accountId
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        occurredOn:
+          type: string
+          format: date
+        occurredAt:
+          type: string
+          format: date-time
+          description: Include only when the user supplied an actual time.
+        timezone:
+          type: string
+          default: Asia/Bangkok
+        amountMinor:
+          type: integer
+          minimum: 1
+          description: Positive amount in the currency's minor unit.
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+          default: THB
+        transactionKind:
+          type: string
+          enum: [expense, income, refund, credit_card_payment, transfer]
+        accountId:
+          type: string
+          description: Existing Anna account identifier, such as kbank-saving.
+        descriptorRaw:
+          type: string
+          maxLength: 1000
+          description: Required by Anna unless transactionKind is income.
+        merchantName:
+          type: string
+          maxLength: 300
+        categoryPath:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+            minLength: 1
+            maxLength: 100
+        note:
+          type: string
+          maxLength: 5000
+        rawText:
+          type: string
+          maxLength: 5000
+          description: Preserve the user's original transaction message.
+
+    EventType:
+      type: string
+      enum:
+        - company-event
+        - social-event
+        - meal-gathering
+        - appointment-completed
+        - travel
+        - celebration
+        - personal-milestone
+        - work-milestone
+        - health-fitness
+        - pet
+        - family
+        - general-memory
+
+    EventFinancialContext:
+      type: object
+      additionalProperties: false
+      required: [currency]
+      minProperties: 2
+      properties:
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+        totalValueMinor:
+          type: integer
+          minimum: 0
+        allowanceMinor:
+          type: integer
+          minimum: 0
+        coveredByOthersMinor:
+          type: integer
+          minimum: 0
+        personalPaymentMinor:
+          type: integer
+          minimum: 0
+          description: Zero only when the source explicitly says the user paid nothing.
+
+    EventAttributeScalar:
+      oneOf:
+        - type: string
+          maxLength: 1000
+        - type: number
+        - type: boolean
+        - type: "null"
+
+    EventAttributeValue:
+      oneOf:
+        - $ref: "#/components/schemas/EventAttributeScalar"
+        - type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/EventAttributeScalar"
+
+    EventAttributes:
+      type: object
+      maxProperties: 32
+      description: >-
+        Guarded event-specific extension data. Keys cannot start with a dollar
+        sign or contain a dot. Values are short JSON scalars or scalar arrays.
+      additionalProperties:
+        $ref: "#/components/schemas/EventAttributeValue"
+
+    CreateEventRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, occurredOn, title, rawText]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        occurredOn:
+          type: string
+          format: date
+          description: Completed local date; future dates are rejected.
+        occurredAt:
+          type: string
+          format: date-time
+          description: Include only when the user supplied an actual time.
+        timezone:
+          type: string
+          default: Asia/Bangkok
+          description: IANA timezone.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        eventType:
+          $ref: "#/components/schemas/EventType"
+        location:
+          type: string
+          minLength: 1
+          maxLength: 500
+        people:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+        description:
+          type: string
+          maxLength: 5000
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 50
+        financialContext:
+          $ref: "#/components/schemas/EventFinancialContext"
+        relatedTransactionIds:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items:
+            type: string
+            pattern: "^[a-fA-F0-9]{24}$"
+        attributes:
+          $ref: "#/components/schemas/EventAttributes"
+        rawText:
+          type: string
+          minLength: 1
+          maxLength: 5000
+          description: Preserve the user's original event message exactly.
+
+    EventSearchRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        occurredFrom:
+          type: string
+          format: date
+        occurredTo:
+          type: string
+          format: date
+        createdFrom:
+          type: string
+          format: date-time
+        createdTo:
+          type: string
+          format: date-time
+        eventTypes:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/EventType"
+        location:
+          type: string
+          maxLength: 500
+        people:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 200
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 50
+        text:
+          type: string
+        sort:
+          type: string
+          enum: [occurred_desc, occurred_asc, created_desc]
+          default: occurred_desc
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+
+    UpdateEventRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        occurredOn:
+          type: string
+          format: date
+        occurredAt:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        timezone:
+          type: string
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        eventType:
+          $ref: "#/components/schemas/EventType"
+        location:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 500
+            - type: "null"
+        people:
+          oneOf:
+            - type: array
+              maxItems: 50
+              items:
+                type: string
+            - type: "null"
+        description:
+          oneOf:
+            - type: string
+              maxLength: 5000
+            - type: "null"
+        tags:
+          oneOf:
+            - type: array
+              maxItems: 20
+              items:
+                type: string
+            - type: "null"
+        financialContext:
+          oneOf:
+            - $ref: "#/components/schemas/EventFinancialContext"
+            - type: "null"
+        relatedTransactionIds:
+          oneOf:
+            - type: array
+              maxItems: 20
+              uniqueItems: true
+              items:
+                type: string
+                pattern: "^[a-fA-F0-9]{24}$"
+            - type: "null"
+        attributes:
+          oneOf:
+            - $ref: "#/components/schemas/EventAttributes"
+            - type: "null"
+
+    EventDocument:
+      type: object
+      description: Managed event document encoded as MongoDB Extended JSON.
+      additionalProperties: true
+
+    EventResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/EventDocument"
+
+    EventSearchResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventDocument"
+        meta:
+          type: object
+          required: [count]
+          properties:
+            count:
+              type: integer
+
+    WriteResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [id, created]
+          properties:
+            id:
+              description: MongoDB Extended JSON identifier or string identifier.
+            created:
+              type: boolean
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string

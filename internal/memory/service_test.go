@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,13 @@ type repositoryStub struct {
 	accountActive   bool
 	transaction     bson.D
 	transactionHash string
+	event           bson.D
+	eventHash       string
+	events          []bson.M
+	eventSearch     EventSearchInput
+	eventDeleted    bool
+	deletedEventID  bson.ObjectID
+	eventUpdate     bson.D
 	reminder        bson.D
 	reminderRules   []ReminderRule
 	completed       map[ReminderCompletionKey]bool
@@ -49,6 +57,36 @@ func (stub *repositoryStub) CreateTransaction(_ context.Context, document bson.D
 	stub.transactionHash = requestHash
 	return "transaction-id", true, nil
 }
+func (stub *repositoryStub) TransactionExists(context.Context, bson.ObjectID) (bool, error) {
+	return true, nil
+}
+func (stub *repositoryStub) CreateEvent(_ context.Context, document bson.D, _ string, requestHash string) (any, bool, error) {
+	stub.event = document
+	stub.eventHash = requestHash
+	return "event-id", true, nil
+}
+func (stub *repositoryStub) EventByID(context.Context, bson.ObjectID) (bson.M, error) {
+	if len(stub.events) == 0 {
+		return nil, ErrNotFound
+	}
+	return stub.events[0], nil
+}
+func (stub *repositoryStub) SearchEvents(_ context.Context, input EventSearchInput) ([]bson.M, error) {
+	stub.eventSearch = input
+	return stub.events, nil
+}
+func (stub *repositoryStub) DeleteEvent(_ context.Context, id bson.ObjectID) (bool, error) {
+	stub.deletedEventID = id
+	return stub.eventDeleted, nil
+}
+func (stub *repositoryStub) UpdateEvent(_ context.Context, _ bson.ObjectID, update bson.D, _ bool) (bson.M, error) {
+	stub.eventUpdate = update
+	document := bson.M{}
+	for _, element := range update {
+		document[element.Key] = element.Value
+	}
+	return document, nil
+}
 func (stub *repositoryStub) CreateReminder(_ context.Context, document bson.D) (bool, error) {
 	stub.reminder = document
 	return true, nil
@@ -81,9 +119,11 @@ func (stub *repositoryStub) CompleteReminder(_ context.Context, document bson.D,
 
 func TestServiceRejectsGenericManagedWrite(t *testing.T) {
 	service := NewService(&repositoryStub{}, testLimits(), "Asia/Bangkok")
-	_, err := service.InsertOne(context.Background(), "transactions", bson.D{{Key: "anything", Value: true}})
-	if err != ErrManagedCollection {
-		t.Fatalf("expected ErrManagedCollection, got %v", err)
+	for _, collection := range []string{"transactions", "events"} {
+		_, err := service.InsertOne(context.Background(), collection, bson.D{{Key: "anything", Value: true}})
+		if err != ErrManagedCollection {
+			t.Fatalf("expected ErrManagedCollection for %s, got %v", collection, err)
+		}
 	}
 }
 
@@ -120,6 +160,121 @@ func TestServiceBuildsDirectTransaction(t *testing.T) {
 	normalized := documentValue(t, descriptorDocument, "normalized").(*string)
 	if *normalized != "fuji" {
 		t.Fatalf("unexpected descriptor normalization: %q", *normalized)
+	}
+}
+
+func TestServiceRecordsNormalizedEventWithoutCreatingTransaction(t *testing.T) {
+	stub := &repositoryStub{}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+	service.now = func() time.Time { return time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC) }
+	location := "  Sushiro Theprak branch  "
+	description := "  Monthly company dinner.  "
+	zero := int64(0)
+
+	result, err := service.CreateEvent(context.Background(), EventInput{
+		RequestID:   "d19f46f2-f760-4764-89ad-a22ae819ce6e",
+		OccurredOn:  "2026-08-19",
+		Title:       "  Company monthly dinner at Sushiro  ",
+		EventType:   "company-event",
+		Location:    &location,
+		Description: &description,
+		Tags:        []string{" Company ", "DINNER", "company"},
+		FinancialContext: &EventFinancialContextInput{
+			Currency: "THB", TotalValueMinor: int64Pointer(45100), AllowanceMinor: int64Pointer(50000),
+			CoveredByOthersMinor: int64Pointer(45100), PersonalPaymentMinor: &zero,
+		},
+		Attributes: map[string]any{"restaurantChain": "Sushiro"},
+		RawText:    "today มีกินเลี้ยงประจำเดือนบริษัท",
+	})
+	if err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+	if !result.Created || result.ID != "event-id" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if documentValue(t, stub.event, "title") != "Company monthly dinner at Sushiro" {
+		t.Fatalf("event title was not normalized: %#v", stub.event)
+	}
+	if documentValue(t, stub.event, "eventType") != "company-event" {
+		t.Fatalf("unexpected event type: %#v", stub.event)
+	}
+	tags := documentValue(t, stub.event, "tags").([]string)
+	if len(tags) != 2 || tags[0] != "company" || tags[1] != "dinner" {
+		t.Fatalf("unexpected normalized tags: %#v", tags)
+	}
+	if len(stub.eventHash) != 64 {
+		t.Fatalf("expected SHA-256 event request hash, got %q", stub.eventHash)
+	}
+}
+
+func TestServiceSearchesEventsWithNormalizedFilters(t *testing.T) {
+	stub := &repositoryStub{events: []bson.M{{"title": "Company monthly dinner at Sushiro"}}}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+
+	documents, err := service.SearchEvents(context.Background(), EventSearchInput{
+		OccurredFrom: "2026-08-01",
+		OccurredTo:   "2026-08-31",
+		Tags:         []string{" Company ", "DINNER"},
+		Text:         " SUSHIRO dinner ",
+	})
+	if err != nil {
+		t.Fatalf("search events: %v", err)
+	}
+	if len(documents) != 1 {
+		t.Fatalf("unexpected documents: %#v", documents)
+	}
+	if stub.eventSearch.Limit != 50 || stub.eventSearch.Sort != "occurred_desc" {
+		t.Fatalf("search defaults were not applied: %#v", stub.eventSearch)
+	}
+	if len(stub.eventSearch.SearchTokens) != 2 || stub.eventSearch.SearchTokens[0] != "sushiro" || stub.eventSearch.SearchTokens[1] != "dinner" {
+		t.Fatalf("unexpected text tokens: %#v", stub.eventSearch.SearchTokens)
+	}
+	if stub.eventSearch.Tags[0] != "company" || stub.eventSearch.Tags[1] != "dinner" {
+		t.Fatalf("unexpected tags: %#v", stub.eventSearch.Tags)
+	}
+}
+
+func TestServiceDeletesEventWithoutDeletingRelatedTransaction(t *testing.T) {
+	stub := &repositoryStub{eventDeleted: true}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+
+	err := service.DeleteEvent(context.Background(), "66c5d3d872703e1bf75d107a")
+	if err != nil {
+		t.Fatalf("delete event: %v", err)
+	}
+	if stub.deletedEventID.Hex() != "66c5d3d872703e1bf75d107a" {
+		t.Fatalf("unexpected deleted event id: %s", stub.deletedEventID.Hex())
+	}
+}
+
+func TestServiceUpdatesEventAndRegeneratesSearchFields(t *testing.T) {
+	eventID, _ := bson.ObjectIDFromHex("66c5d3d872703e1bf75d107a")
+	stub := &repositoryStub{events: []bson.M{{
+		"_id": eventID, "occurredOn": "2026-08-19", "timezone": "Asia/Bangkok",
+		"title": "Company dinner", "eventType": "company-event", "location": "Sushiro Theprak branch",
+		"people": bson.A{}, "description": nil, "tags": bson.A{"company"}, "financialContext": nil,
+		"relatedTransactionIds": bson.A{}, "attributes": bson.M{},
+		"source": bson.M{"requestId": "d19f46f2-f760-4764-89ad-a22ae819ce6e", "rawText": "Company dinner."},
+	}}}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+	service.now = func() time.Time { return time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC) }
+
+	document, err := service.UpdateEvent(context.Background(), "66c5d3d872703e1bf75d107a", EventUpdateInput{
+		"title": json.RawMessage(`"Company dinner at Sushiro"`),
+		"tags":  json.RawMessage(`["company","sushiro"]`),
+	})
+	if err != nil {
+		t.Fatalf("update event: %v", err)
+	}
+	if document["title"] != "Company dinner at Sushiro" {
+		t.Fatalf("unexpected updated event: %#v", document)
+	}
+	if documentValue(t, stub.eventUpdate, "title") != "Company dinner at Sushiro" {
+		t.Fatalf("update did not contain normalized title: %#v", stub.eventUpdate)
+	}
+	tokens := documentValue(t, stub.eventUpdate, "searchTokens").([]string)
+	if !containsString(tokens, "sushiro") {
+		t.Fatalf("search tokens were not regenerated: %#v", tokens)
 	}
 }
 
@@ -236,6 +391,17 @@ func documentValue(t *testing.T, document bson.D, key string) any {
 	}
 	t.Fatalf("document does not contain %q", key)
 	return nil
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func testLimits() Limits {

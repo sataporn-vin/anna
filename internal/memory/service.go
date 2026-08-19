@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -286,6 +287,290 @@ func (service *Service) CreateTransaction(ctx context.Context, input Transaction
 		return WriteResult{}, err
 	}
 	return WriteResult{ID: id, Created: created}, nil
+}
+
+func (service *Service) CreateEvent(ctx context.Context, input EventInput) (WriteResult, error) {
+	if err := ValidateEvent(&input, service.defaultTimezone, service.now()); err != nil {
+		return WriteResult{}, Invalid(err)
+	}
+	relatedTransactionIDs := make([]bson.ObjectID, 0, len(input.RelatedTransactionIDs))
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	for _, value := range input.RelatedTransactionIDs {
+		id, _ := bson.ObjectIDFromHex(value)
+		exists, err := service.repository.TransactionExists(ctx, id)
+		if err != nil {
+			return WriteResult{}, err
+		}
+		if !exists {
+			return WriteResult{}, Invalid(fmt.Errorf("relatedTransactionIds contains an unknown transaction"))
+		}
+		relatedTransactionIDs = append(relatedTransactionIDs, id)
+	}
+	requestBytes, err := json.Marshal(input)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("encode event idempotency input: %w", err)
+	}
+	requestDigest := sha256.Sum256(requestBytes)
+	requestHash := hex.EncodeToString(requestDigest[:])
+
+	locationNormalized := normalizeOptionalSearchValue(input.Location)
+	peopleNormalized := make([]string, 0, len(input.People))
+	searchValues := []string{input.Title}
+	if input.Location != nil {
+		searchValues = append(searchValues, *input.Location)
+	}
+	for _, person := range input.People {
+		peopleNormalized = append(peopleNormalized, normalizeSearchValue(person))
+		searchValues = append(searchValues, person)
+	}
+	searchValues = append(searchValues, input.Tags...)
+	now := service.now().UTC()
+	document := bson.D{
+		{Key: "schemaVersion", Value: int32(1)},
+		{Key: "occurredOn", Value: input.OccurredOn},
+		{Key: "timezone", Value: input.Timezone},
+		{Key: "title", Value: input.Title},
+		{Key: "eventType", Value: input.EventType},
+		{Key: "location", Value: input.Location},
+		{Key: "locationNormalized", Value: locationNormalized},
+		{Key: "people", Value: input.People},
+		{Key: "peopleNormalized", Value: peopleNormalized},
+		{Key: "description", Value: input.Description},
+		{Key: "tags", Value: input.Tags},
+		{Key: "financialContext", Value: input.FinancialContext},
+		{Key: "relatedTransactionIds", Value: relatedTransactionIDs},
+		{Key: "attributes", Value: input.Attributes},
+		{Key: "source", Value: bson.D{
+			{Key: "type", Value: "direct_entry"},
+			{Key: "requestId", Value: input.RequestID},
+			{Key: "requestHash", Value: requestHash},
+			{Key: "rawText", Value: input.RawText},
+		}},
+		{Key: "searchTokens", Value: eventSearchTokens(searchValues...)},
+		{Key: "createdAt", Value: now},
+		{Key: "updatedAt", Value: now},
+	}
+	if input.OccurredAt != nil {
+		document = append(document[:2], append(bson.D{{Key: "occurredAt", Value: input.OccurredAt.UTC()}}, document[2:]...)...)
+	}
+	id, created, err := service.repository.CreateEvent(ctx, document, input.RequestID, requestHash)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	return WriteResult{ID: id, Created: created}, nil
+}
+
+func (service *Service) GetEvent(ctx context.Context, id string) (bson.M, error) {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, Invalid(fmt.Errorf("event id must be a 24-character hexadecimal object identifier"))
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	document, err := service.repository.EventByID(ctx, objectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.validateResult([]bson.M{document}); err != nil {
+		return nil, err
+	}
+	return document, nil
+}
+
+func (service *Service) SearchEvents(ctx context.Context, input EventSearchInput) ([]bson.M, error) {
+	if err := ValidateEventSearch(&input, service.limits.MaxResultRecords); err != nil {
+		return nil, Invalid(err)
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	documents, err := service.repository.SearchEvents(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(documents)) > input.Limit {
+		return nil, fmt.Errorf("%w: event search record count", ErrResultLimit)
+	}
+	if err := service.validateResult(documents); err != nil {
+		return nil, err
+	}
+	return documents, nil
+}
+
+func (service *Service) DeleteEvent(ctx context.Context, id string) error {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return Invalid(fmt.Errorf("event id must be a 24-character hexadecimal object identifier"))
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	deleted, err := service.repository.DeleteEvent(ctx, objectID)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return ErrNotFound
+	}
+	return nil
+}
+
+type storedEvent struct {
+	OccurredOn            string                      `bson:"occurredOn"`
+	OccurredAt            *time.Time                  `bson:"occurredAt"`
+	Timezone              string                      `bson:"timezone"`
+	Title                 string                      `bson:"title"`
+	EventType             string                      `bson:"eventType"`
+	Location              *string                     `bson:"location"`
+	People                []string                    `bson:"people"`
+	Description           *string                     `bson:"description"`
+	Tags                  []string                    `bson:"tags"`
+	FinancialContext      *EventFinancialContextInput `bson:"financialContext"`
+	RelatedTransactionIDs []bson.ObjectID             `bson:"relatedTransactionIds"`
+	Attributes            map[string]any              `bson:"attributes"`
+	Source                struct {
+		RequestID string `bson:"requestId"`
+		RawText   string `bson:"rawText"`
+	} `bson:"source"`
+}
+
+func (service *Service) UpdateEvent(ctx context.Context, id string, patch EventUpdateInput) (bson.M, error) {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, Invalid(fmt.Errorf("event id must be a 24-character hexadecimal object identifier"))
+	}
+	if len(patch) == 0 {
+		return nil, Invalid(fmt.Errorf("event update must contain at least one field"))
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	existing, err := service.repository.EventByID(ctx, objectID)
+	if err != nil {
+		return nil, err
+	}
+	input, err := eventInputFromDocument(existing)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyEventPatch(&input, patch); err != nil {
+		return nil, Invalid(err)
+	}
+	if err := ValidateEvent(&input, service.defaultTimezone, service.now()); err != nil {
+		return nil, Invalid(err)
+	}
+	relatedTransactionIDs := make([]bson.ObjectID, 0, len(input.RelatedTransactionIDs))
+	for _, value := range input.RelatedTransactionIDs {
+		transactionID, _ := bson.ObjectIDFromHex(value)
+		exists, err := service.repository.TransactionExists(ctx, transactionID)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, Invalid(fmt.Errorf("relatedTransactionIds contains an unknown transaction"))
+		}
+		relatedTransactionIDs = append(relatedTransactionIDs, transactionID)
+	}
+	locationNormalized := normalizeOptionalSearchValue(input.Location)
+	peopleNormalized := make([]string, 0, len(input.People))
+	searchValues := []string{input.Title}
+	if input.Location != nil {
+		searchValues = append(searchValues, *input.Location)
+	}
+	for _, person := range input.People {
+		peopleNormalized = append(peopleNormalized, normalizeSearchValue(person))
+		searchValues = append(searchValues, person)
+	}
+	searchValues = append(searchValues, input.Tags...)
+	update := bson.D{
+		{Key: "occurredOn", Value: input.OccurredOn},
+		{Key: "timezone", Value: input.Timezone},
+		{Key: "title", Value: input.Title},
+		{Key: "eventType", Value: input.EventType},
+		{Key: "location", Value: input.Location},
+		{Key: "locationNormalized", Value: locationNormalized},
+		{Key: "people", Value: input.People},
+		{Key: "peopleNormalized", Value: peopleNormalized},
+		{Key: "description", Value: input.Description},
+		{Key: "tags", Value: input.Tags},
+		{Key: "financialContext", Value: input.FinancialContext},
+		{Key: "relatedTransactionIds", Value: relatedTransactionIDs},
+		{Key: "attributes", Value: input.Attributes},
+		{Key: "searchTokens", Value: eventSearchTokens(searchValues...)},
+		{Key: "updatedAt", Value: service.now().UTC()},
+	}
+	if input.OccurredAt != nil {
+		update = append(update, bson.E{Key: "occurredAt", Value: input.OccurredAt.UTC()})
+	}
+	return service.repository.UpdateEvent(ctx, objectID, update, input.OccurredAt == nil)
+}
+
+func eventInputFromDocument(document bson.M) (EventInput, error) {
+	encoded, err := bson.Marshal(document)
+	if err != nil {
+		return EventInput{}, fmt.Errorf("encode existing event: %w", err)
+	}
+	var stored storedEvent
+	if err := bson.Unmarshal(encoded, &stored); err != nil {
+		return EventInput{}, fmt.Errorf("decode existing event: %w", err)
+	}
+	relatedTransactionIDs := make([]string, 0, len(stored.RelatedTransactionIDs))
+	for _, id := range stored.RelatedTransactionIDs {
+		relatedTransactionIDs = append(relatedTransactionIDs, id.Hex())
+	}
+	return EventInput{
+		RequestID: stored.Source.RequestID, OccurredOn: stored.OccurredOn, OccurredAt: stored.OccurredAt,
+		Timezone: stored.Timezone, Title: stored.Title, EventType: stored.EventType, Location: stored.Location,
+		People: stored.People, Description: stored.Description, Tags: stored.Tags, FinancialContext: stored.FinancialContext,
+		RelatedTransactionIDs: relatedTransactionIDs, Attributes: stored.Attributes, RawText: stored.Source.RawText,
+	}, nil
+}
+
+func applyEventPatch(input *EventInput, patch EventUpdateInput) error {
+	for field, raw := range patch {
+		var destination any
+		switch field {
+		case "occurredOn":
+			destination = &input.OccurredOn
+		case "occurredAt":
+			destination = &input.OccurredAt
+		case "timezone":
+			destination = &input.Timezone
+		case "title":
+			destination = &input.Title
+		case "eventType":
+			destination = &input.EventType
+		case "location":
+			destination = &input.Location
+		case "people":
+			destination = &input.People
+		case "description":
+			destination = &input.Description
+		case "tags":
+			destination = &input.Tags
+		case "financialContext":
+			destination = &input.FinancialContext
+		case "relatedTransactionIds":
+			destination = &input.RelatedTransactionIDs
+		case "attributes":
+			destination = &input.Attributes
+		default:
+			return fmt.Errorf("field %q cannot be updated", field)
+		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && (field == "occurredOn" || field == "timezone" || field == "title" || field == "eventType") {
+			return fmt.Errorf("field %q cannot be null", field)
+		}
+		if err := json.Unmarshal(raw, destination); err != nil {
+			return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+		}
+	}
+	return nil
+}
+
+func normalizeOptionalSearchValue(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	normalized := normalizeSearchValue(*value)
+	return &normalized
 }
 
 func (service *Service) CreateReminder(ctx context.Context, input ReminderInput) (ReminderInfo, bool, error) {
