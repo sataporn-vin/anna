@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func TestManagedEventsIntegration(t *testing.T) {
@@ -42,6 +43,32 @@ func TestManagedEventsIntegration(t *testing.T) {
 		MaxPipelineStages: 10, OperationTimeout: 5 * time.Second,
 	}, "Asia/Bangkok")
 	localNow := time.Now().In(mustLocation(t, "Asia/Bangkok"))
+	if _, _, err := application.CreateAccount(ctx, memory.AccountInput{
+		ID: "krungsri-homepro-credit-card", Name: "Krungsri HomePro Credit Card", Kind: "credit_card", Currency: "THB",
+	}); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, _, err := application.CreatePaymentChannel(ctx, memory.PaymentChannelInput{
+		ID: "truemoney-wallet", Name: "TrueMoney Wallet",
+	}); err != nil {
+		t.Fatalf("create payment channel: %v", err)
+	}
+	descriptor := "7-Eleven"
+	transaction, err := application.CreateTransaction(ctx, memory.TransactionInput{
+		RequestID: uuid.NewString(), OccurredOn: localNow.Format("2006-01-02"), AmountMinor: 16500,
+		TransactionKind: "expense", AccountID: "krungsri-homepro-credit-card",
+		PaymentChannelID: "truemoney-wallet", DescriptorRaw: &descriptor,
+	})
+	if err != nil {
+		t.Fatalf("create transaction with payment channel: %v", err)
+	}
+	var storedTransaction bson.M
+	if err := store.database.Collection("transactions").FindOne(ctx, bson.D{{Key: "_id", Value: transaction.ID}}).Decode(&storedTransaction); err != nil {
+		t.Fatalf("retrieve transaction with payment channel: %v", err)
+	}
+	if storedTransaction["paymentChannelId"] != "truemoney-wallet" {
+		t.Fatalf("unexpected stored payment channel: %#v", storedTransaction)
+	}
 	requestID := uuid.NewString()
 	input := memory.EventInput{
 		RequestID:  requestID,
@@ -114,6 +141,42 @@ func TestManagedEventsIntegration(t *testing.T) {
 	}
 	if _, err := application.GetEvent(ctx, id.Hex()); !errors.Is(err, memory.ErrNotFound) {
 		t.Fatalf("expected deleted event to be missing, got %v", err)
+	}
+}
+
+func TestExistingTransactionsCollectionGetsPaymentChannelValidator(t *testing.T) {
+	uri := os.Getenv("MONGODB_TEST_URI")
+	if uri == "" {
+		t.Skip("MONGODB_TEST_URI is not set")
+	}
+	databaseName := "anna_transaction_migration_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store, err := Connect(ctx, uri, databaseName)
+	if err != nil {
+		t.Fatalf("connect to MongoDB: %v", err)
+	}
+	t.Cleanup(func() {
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dropCancel()
+		_ = store.database.Drop(dropCtx)
+		_ = store.Close(dropCtx)
+	})
+	legacyValidator := transactionValidator()
+	properties := legacyValidator["$jsonSchema"].(bson.M)["properties"].(bson.M)
+	delete(properties, "paymentChannelId")
+	if err := store.database.CreateCollection(ctx, "transactions", options.CreateCollection().SetValidator(legacyValidator)); err != nil {
+		t.Fatalf("create legacy transactions collection: %v", err)
+	}
+	if err := store.EnsureBootstrap(ctx); err != nil {
+		t.Fatalf("upgrade transactions validator: %v", err)
+	}
+	specifications, err := store.database.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: "transactions"}})
+	if err != nil || len(specifications) != 1 {
+		t.Fatalf("inspect upgraded transactions validator: specs=%#v error=%v", specifications, err)
+	}
+	if _, err := specifications[0].Options.LookupErr("validator", "$jsonSchema", "properties", "paymentChannelId"); err != nil {
+		t.Fatalf("paymentChannelId is missing from upgraded validator: %v", err)
 	}
 }
 

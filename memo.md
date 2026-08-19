@@ -68,6 +68,7 @@ Bootstrap these collections:
 
 ```text
 accounts
+payment_channels
 transactions
 memories
 people
@@ -91,7 +92,7 @@ The client may create additional collections through the memory service. Collect
 
 The service determines accessibility from the bootstrap list and MongoDB's collection catalog after filtering out reserved names. The dedicated application user is the only non-administrative writer to this database. MongoDB administrative operations remain inaccessible.
 
-`accounts`, `transactions`, `events`, `reminders`, and `reminder_completions` are managed collections with strict MongoDB validation and application-level rules. User-created collections remain flexible except for the service-wide safety restrictions. Managed events also provide a bounded `attributes` object for event-specific JSON scalars and scalar arrays; these attributes never affect finance behavior or receive automatic indexes.
+`accounts`, `payment_channels`, `transactions`, `events`, `reminders`, and `reminder_completions` are managed collections with strict MongoDB validation and application-level rules. User-created collections remain flexible except for the service-wide safety restrictions. Managed events also provide a bounded `attributes` object for event-specific JSON scalars and scalar arrays; these attributes never affect finance behavior or receive automatic indexes.
 
 ### Example transaction
 

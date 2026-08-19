@@ -87,6 +87,24 @@ func (server *Server) createAccount(writer http.ResponseWriter, request *http.Re
 	writeJSON(writer, status, map[string]any{"data": account, "created": created})
 }
 
+func (server *Server) createPaymentChannel(writer http.ResponseWriter, request *http.Request) {
+	var input memory.PaymentChannelInput
+	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {
+		server.handleError(writer, memory.Invalid(err))
+		return
+	}
+	channel, created, err := server.application.CreatePaymentChannel(request.Context(), input)
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(writer, status, map[string]any{"data": channel, "created": created})
+}
+
 func (server *Server) createTransaction(writer http.ResponseWriter, request *http.Request) {
 	var input memory.TransactionInput
 	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {

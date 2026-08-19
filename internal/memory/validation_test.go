@@ -51,6 +51,31 @@ func TestValidateTransactionAllowsDateOnly(t *testing.T) {
 	}
 }
 
+func TestValidateTransactionPaymentChannel(t *testing.T) {
+	descriptor := "7-Eleven"
+	input := TransactionInput{
+		RequestID: "570b5176-95c9-4812-9a2e-d52fb9b7e11a", OccurredOn: "2026-08-19",
+		AmountMinor: 16500, TransactionKind: "expense", AccountID: "krungsri-homepro-credit-card",
+		PaymentChannelID: "truemoney-wallet", DescriptorRaw: &descriptor,
+	}
+	if err := ValidateTransaction(&input, "Asia/Bangkok"); err != nil {
+		t.Fatalf("expected payment channel to be valid: %v", err)
+	}
+	input.PaymentChannelID = "TrueMoney Wallet"
+	if err := ValidateTransaction(&input, "Asia/Bangkok"); err == nil || !strings.Contains(err.Error(), "paymentChannelId") {
+		t.Fatalf("expected invalid payment channel identifier, got %v", err)
+	}
+}
+
+func TestValidatePaymentChannel(t *testing.T) {
+	if err := ValidatePaymentChannel(PaymentChannelInput{ID: "truemoney-wallet", Name: "TrueMoney Wallet"}); err != nil {
+		t.Fatalf("expected payment channel to be valid: %v", err)
+	}
+	if err := ValidatePaymentChannel(PaymentChannelInput{ID: "TrueMoney", Name: "TrueMoney Wallet"}); err == nil {
+		t.Fatal("expected invalid payment channel identifier")
+	}
+}
+
 func TestMongoSafetyValidation(t *testing.T) {
 	tests := []struct {
 		name string

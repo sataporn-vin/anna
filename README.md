@@ -59,6 +59,17 @@ curl --fail-with-body \
   http://localhost:8080/v1/accounts
 ```
 
+Create a payment channel when a transaction uses an intermediary that is not
+the charged account:
+
+```sh
+curl --fail-with-body \
+  -H "Authorization: Bearer $ANNA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"truemoney-wallet","name":"TrueMoney Wallet"}' \
+  http://localhost:8080/v1/payment-channels
+```
+
 Create a transaction. Generate a new `requestId` for each logical transaction and reuse it only when retrying that same request:
 
 ```sh
@@ -198,6 +209,7 @@ Use phase `occurrence` to complete the wear reminder itself. Completions apply o
 | `GET` | `/v1/collections` | List accessible collections |
 | `POST` | `/v1/collections` | Create a flexible collection |
 | `POST` | `/v1/accounts` | Create a managed account |
+| `POST` | `/v1/payment-channels` | Create a managed payment channel |
 | `POST` | `/v1/transactions` | Create an idempotent, validated transaction |
 | `POST` | `/v1/events` | Create an idempotent, validated completed event |
 | `GET` | `/v1/events/{id}` | Retrieve one event |
@@ -259,4 +271,4 @@ cd /Users/sataporn.vin/bag/codex/anna
 MONGODB_TEST_URI='mongodb://localhost:27017' go test ./internal/mongostore -run TestManagedEventsIntegration
 ```
 
-An existing unvalidated `events` collection requires a one-time `collMod` upgrade. Startup rejects incompatible legacy event documents. The database user performing that upgrade needs `collMod` permission; newly created databases receive the validator during bootstrap and do not need the extra permission.
+An existing unvalidated `events` collection or a `transactions` collection whose validator predates payment-channel support requires a one-time `collMod` upgrade. Startup rejects incompatible legacy documents. The database user performing that upgrade needs `collMod` permission; newly created databases receive the validators during bootstrap and do not need the extra permission.

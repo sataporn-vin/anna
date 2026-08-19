@@ -2,15 +2,258 @@ openapi: 3.1.0
 info:
   title: Anna Personal Memory
   description: >-
-    Focused actions for recording personal transactions, completed life-log
-    events, and recurring reminders. Dates are local calendar dates in
-    YYYY-MM-DD format.
-  version: 1.0.0
+    Complete Anna REST API for accounts, payment channels, transactions,
+    completed life-log events, reminders, collections, and constrained MongoDB
+    operations. Dates are local calendar dates in YYYY-MM-DD format.
+  version: 1.1.0
 servers:
   - url: https://anna-production-bfb9.up.railway.app
 security:
   - bearerAuth: []
 paths:
+  /health/live:
+    get:
+      operationId: getLiveness
+      summary: Check process liveness
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+
+  /health/ready:
+    get:
+      operationId: getReadiness
+      summary: Check database readiness
+      security: []
+      responses:
+        "200":
+          description: The service and database are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "503":
+          description: The database is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+
+  /v1/collections:
+    get:
+      operationId: listCollections
+      summary: List accessible collections
+      responses:
+        "200":
+          description: Accessible managed and flexible collections.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionListResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    post:
+      operationId: createCollection
+      summary: Create a flexible collection
+      description: Managed collection names cannot be created through this operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCollectionRequest"
+      responses:
+        "200":
+          description: The collection already existed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateCollectionResponse"
+        "201":
+          description: The collection was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateCollectionResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/accounts:
+    post:
+      operationId: createAccount
+      summary: Create a financial account
+      description: >-
+        Create an account only after the user explicitly confirms its identity,
+        kind, and currency. Transactions can reference the returned account ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: The account was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAccountResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/payment-channels:
+    post:
+      operationId: createPaymentChannel
+      summary: Create a payment channel
+      description: >-
+        Create an intermediary such as TrueMoney Wallet or LINE Pay. A payment
+        channel is distinct from the account charged for the transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePaymentChannelRequest"
+      responses:
+        "201":
+          description: The payment channel was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePaymentChannelResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/mongo/find:
+    post:
+      operationId: findDocuments
+      summary: Find documents in an accessible collection
+      description: Uses constrained MongoDB Extended JSON filters, projection, and sort.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FindRequest"
+      responses:
+        "200":
+          description: Matching documents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentsResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/mongo/find-one:
+    post:
+      operationId: findOneDocument
+      summary: Find one document in an accessible collection
+      description: Uses constrained MongoDB Extended JSON filters, projection, and sort.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FindRequest"
+      responses:
+        "200":
+          description: The matching document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/mongo/insert-one:
+    post:
+      operationId: insertOneDocument
+      summary: Insert into a flexible collection
+      description: Generic writes to managed collections are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InsertOneRequest"
+      responses:
+        "201":
+          description: The document was inserted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WriteResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/mongo/update-one:
+    post:
+      operationId: updateOneDocument
+      summary: Update one document in a flexible collection
+      description: Generic writes to managed collections are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOneRequest"
+      responses:
+        "200":
+          description: Update counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateOneResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/mongo/delete-one:
+    post:
+      operationId: deleteOneDocument
+      summary: Delete one document from a flexible collection
+      description: Generic writes to managed collections are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteOneRequest"
+      responses:
+        "200":
+          description: Delete count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteOneResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/mongo/aggregate:
+    post:
+      operationId: aggregateDocuments
+      summary: Run a constrained aggregation
+      description: Uses the server's allowlisted MongoDB aggregation stages and expressions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AggregateRequest"
+      responses:
+        "200":
+          description: Aggregation results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentsResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /v1/reminders/digest:
     get:
       operationId: getReminderDigest
@@ -267,6 +510,263 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    StatusResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+
+    CollectionInfo:
+      type: object
+      additionalProperties: false
+      required: [name, managed]
+      properties:
+        name:
+          type: string
+        managed:
+          type: boolean
+
+    CollectionListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionInfo"
+        meta:
+          type: object
+          required: [count]
+          properties:
+            count:
+              type: integer
+
+    CreateCollectionRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z][a-z0-9_]{0,62}$"
+
+    CreateCollectionResponse:
+      type: object
+      additionalProperties: false
+      required: [data, created]
+      properties:
+        data:
+          $ref: "#/components/schemas/CollectionInfo"
+        created:
+          type: boolean
+
+    CreateAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind]
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          maxLength: 100
+          description: Stable lowercase kebab-case identifier.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        kind:
+          type: string
+          enum: [bank_account, credit_card, cash, wallet, other]
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+          default: THB
+
+    Account:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, currency, active]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [bank_account, credit_card, cash, wallet, other]
+        currency:
+          type: string
+        active:
+          type: boolean
+
+    CreateAccountResponse:
+      type: object
+      additionalProperties: false
+      required: [data, created]
+      properties:
+        data:
+          $ref: "#/components/schemas/Account"
+        created:
+          type: boolean
+
+    CreatePaymentChannelRequest:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          maxLength: 100
+          description: Stable lowercase kebab-case identifier.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+
+    PaymentChannel:
+      type: object
+      additionalProperties: false
+      required: [id, name, active]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        active:
+          type: boolean
+
+    CreatePaymentChannelResponse:
+      type: object
+      additionalProperties: false
+      required: [data, created]
+      properties:
+        data:
+          $ref: "#/components/schemas/PaymentChannel"
+        created:
+          type: boolean
+
+    ExtendedJSONDocument:
+      type: object
+      description: MongoDB Extended JSON document.
+      properties:
+        _id:
+          description: >-
+            Optional MongoDB identifier. Other document and query fields are
+            accepted through additionalProperties.
+      additionalProperties: true
+
+    FindRequest:
+      type: object
+      additionalProperties: false
+      required: [collection]
+      properties:
+        collection:
+          type: string
+        filter:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+        projection:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+        sort:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+        limit:
+          type: integer
+          minimum: 1
+
+    InsertOneRequest:
+      type: object
+      additionalProperties: false
+      required: [collection, document]
+      properties:
+        collection:
+          type: string
+        document:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+
+    UpdateOneRequest:
+      type: object
+      additionalProperties: false
+      required: [collection, filter, update]
+      properties:
+        collection:
+          type: string
+        filter:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+        update:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+
+    DeleteOneRequest:
+      type: object
+      additionalProperties: false
+      required: [collection, filter]
+      properties:
+        collection:
+          type: string
+        filter:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+
+    AggregateRequest:
+      type: object
+      additionalProperties: false
+      required: [collection, pipeline]
+      properties:
+        collection:
+          type: string
+        pipeline:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ExtendedJSONDocument"
+
+    DocumentResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/ExtendedJSONDocument"
+
+    DocumentsResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExtendedJSONDocument"
+        meta:
+          type: object
+          required: [count]
+          properties:
+            count:
+              type: integer
+
+    UpdateOneResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [matchedCount, modifiedCount]
+          properties:
+            matchedCount:
+              type: integer
+            modifiedCount:
+              type: integer
+
+    DeleteOneResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [deletedCount]
+          properties:
+            deletedCount:
+              type: integer
+
     ReminderDigestResponse:
       type: object
       required: [data, meta]
@@ -438,6 +938,13 @@ components:
         accountId:
           type: string
           description: Existing Anna account identifier, such as kbank-saving.
+        paymentChannelId:
+          type: string
+          pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          maxLength: 100
+          description: >-
+            Optional existing payment-channel identifier, such as
+            truemoney-wallet. This is distinct from accountId.
         descriptorRaw:
           type: string
           maxLength: 1000

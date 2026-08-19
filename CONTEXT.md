@@ -43,7 +43,7 @@ The bank account, credit card, cash wallet, or other balance against which the t
 _Avoid_: Payment method, source
 
 **Payment channel**:
-An optional intermediary used for payment, such as TrueMoney Wallet or LINE Pay.
+A configured optional intermediary used for payment, such as TrueMoney Wallet or LINE Pay. It is distinct from the account against which the transaction was observed.
 _Avoid_: Account, payment source
 
 **Category path**:

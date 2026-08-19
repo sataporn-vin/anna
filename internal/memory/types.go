@@ -9,15 +9,17 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("not found")
-	ErrCollectionExists    = errors.New("collection already exists")
-	ErrCollectionLimit     = errors.New("collection limit reached")
-	ErrManagedCollection   = errors.New("managed collection does not allow generic writes")
-	ErrInactiveAccount     = errors.New("account does not exist or is inactive")
-	ErrIdempotencyConflict = errors.New("idempotency key was already used for different content")
-	ErrAccountExists       = errors.New("account already exists")
-	ErrReminderExists      = errors.New("reminder already exists")
-	ErrResultLimit         = errors.New("result exceeds a configured limit")
+	ErrNotFound               = errors.New("not found")
+	ErrCollectionExists       = errors.New("collection already exists")
+	ErrCollectionLimit        = errors.New("collection limit reached")
+	ErrManagedCollection      = errors.New("managed collection does not allow generic writes")
+	ErrInactiveAccount        = errors.New("account does not exist or is inactive")
+	ErrIdempotencyConflict    = errors.New("idempotency key was already used for different content")
+	ErrAccountExists          = errors.New("account already exists")
+	ErrInactivePaymentChannel = errors.New("payment channel does not exist or is inactive")
+	ErrPaymentChannelExists   = errors.New("payment channel already exists")
+	ErrReminderExists         = errors.New("reminder already exists")
+	ErrResultLimit            = errors.New("result exceeds a configured limit")
 )
 
 type ValidationError struct {
@@ -89,20 +91,32 @@ type AccountInfo struct {
 	Active   bool   `json:"active"`
 }
 
+type PaymentChannelInput struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type PaymentChannelInfo struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+}
+
 type TransactionInput struct {
-	RequestID       string     `json:"requestId"`
-	OccurredOn      string     `json:"occurredOn"`
-	OccurredAt      *time.Time `json:"occurredAt,omitempty"`
-	Timezone        string     `json:"timezone,omitempty"`
-	AmountMinor     int64      `json:"amountMinor"`
-	Currency        string     `json:"currency,omitempty"`
-	TransactionKind string     `json:"transactionKind"`
-	AccountID       string     `json:"accountId"`
-	DescriptorRaw   *string    `json:"descriptorRaw,omitempty"`
-	MerchantName    *string    `json:"merchantName,omitempty"`
-	CategoryPath    []string   `json:"categoryPath,omitempty"`
-	Note            *string    `json:"note,omitempty"`
-	RawText         *string    `json:"rawText,omitempty"`
+	RequestID        string     `json:"requestId"`
+	OccurredOn       string     `json:"occurredOn"`
+	OccurredAt       *time.Time `json:"occurredAt,omitempty"`
+	Timezone         string     `json:"timezone,omitempty"`
+	AmountMinor      int64      `json:"amountMinor"`
+	Currency         string     `json:"currency,omitempty"`
+	TransactionKind  string     `json:"transactionKind"`
+	AccountID        string     `json:"accountId"`
+	PaymentChannelID string     `json:"paymentChannelId,omitempty"`
+	DescriptorRaw    *string    `json:"descriptorRaw,omitempty"`
+	MerchantName     *string    `json:"merchantName,omitempty"`
+	CategoryPath     []string   `json:"categoryPath,omitempty"`
+	Note             *string    `json:"note,omitempty"`
+	RawText          *string    `json:"rawText,omitempty"`
 }
 
 type EventFinancialContextInput struct {

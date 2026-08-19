@@ -19,6 +19,8 @@ type Repository interface {
 	Aggregate(context.Context, AggregateInput) ([]bson.M, error)
 	CreateAccount(context.Context, bson.D) (bool, error)
 	AccountIsActive(context.Context, string) (bool, error)
+	CreatePaymentChannel(context.Context, bson.D) (bool, error)
+	PaymentChannelIsActive(context.Context, string) (bool, error)
 	CreateTransaction(context.Context, bson.D, string, string) (any, bool, error)
 	TransactionExists(context.Context, bson.ObjectID) (bool, error)
 	CreateEvent(context.Context, bson.D, string, string) (any, bool, error)

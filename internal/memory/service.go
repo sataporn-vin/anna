@@ -16,6 +16,7 @@ import (
 
 var bootstrapCollections = []string{
 	"accounts",
+	"payment_channels",
 	"transactions",
 	"memories",
 	"people",
@@ -230,6 +231,24 @@ func (service *Service) CreateAccount(ctx context.Context, input AccountInput) (
 	return AccountInfo{ID: input.ID, Name: strings.TrimSpace(input.Name), Kind: input.Kind, Currency: input.Currency, Active: true}, created, err
 }
 
+func (service *Service) CreatePaymentChannel(ctx context.Context, input PaymentChannelInput) (PaymentChannelInfo, bool, error) {
+	if err := ValidatePaymentChannel(input); err != nil {
+		return PaymentChannelInfo{}, false, Invalid(err)
+	}
+	now := service.now().UTC()
+	document := bson.D{
+		{Key: "_id", Value: input.ID},
+		{Key: "name", Value: strings.TrimSpace(input.Name)},
+		{Key: "active", Value: true},
+		{Key: "createdAt", Value: now},
+		{Key: "updatedAt", Value: now},
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	created, err := service.repository.CreatePaymentChannel(ctx, document)
+	return PaymentChannelInfo{ID: input.ID, Name: strings.TrimSpace(input.Name), Active: true}, created, err
+}
+
 func (service *Service) CreateTransaction(ctx context.Context, input TransactionInput) (WriteResult, error) {
 	if err := ValidateTransaction(&input, service.defaultTimezone); err != nil {
 		return WriteResult{}, Invalid(err)
@@ -242,6 +261,15 @@ func (service *Service) CreateTransaction(ctx context.Context, input Transaction
 	}
 	if !active {
 		return WriteResult{}, ErrInactiveAccount
+	}
+	if input.PaymentChannelID != "" {
+		active, err := service.repository.PaymentChannelIsActive(ctx, input.PaymentChannelID)
+		if err != nil {
+			return WriteResult{}, err
+		}
+		if !active {
+			return WriteResult{}, ErrInactivePaymentChannel
+		}
 	}
 	requestBytes, err := json.Marshal(input)
 	if err != nil {
@@ -278,6 +306,9 @@ func (service *Service) CreateTransaction(ctx context.Context, input Transaction
 		}},
 		{Key: "createdAt", Value: now},
 		{Key: "updatedAt", Value: now},
+	}
+	if input.PaymentChannelID != "" {
+		document = append(document[:6], append(bson.D{{Key: "paymentChannelId", Value: input.PaymentChannelID}}, document[6:]...)...)
 	}
 	if input.OccurredAt != nil {
 		document = append(document[:3], append(bson.D{{Key: "occurredAt", Value: input.OccurredAt.UTC()}}, document[3:]...)...)

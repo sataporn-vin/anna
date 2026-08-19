@@ -11,21 +11,23 @@ import (
 )
 
 type repositoryStub struct {
-	collections     []string
-	accountActive   bool
-	transaction     bson.D
-	transactionHash string
-	event           bson.D
-	eventHash       string
-	events          []bson.M
-	eventSearch     EventSearchInput
-	eventDeleted    bool
-	deletedEventID  bson.ObjectID
-	eventUpdate     bson.D
-	reminder        bson.D
-	reminderRules   []ReminderRule
-	completed       map[ReminderCompletionKey]bool
-	completion      bson.D
+	collections          []string
+	accountActive        bool
+	paymentChannelActive bool
+	paymentChannel       bson.D
+	transaction          bson.D
+	transactionHash      string
+	event                bson.D
+	eventHash            string
+	events               []bson.M
+	eventSearch          EventSearchInput
+	eventDeleted         bool
+	deletedEventID       bson.ObjectID
+	eventUpdate          bson.D
+	reminder             bson.D
+	reminderRules        []ReminderRule
+	completed            map[ReminderCompletionKey]bool
+	completion           bson.D
 }
 
 func (stub *repositoryStub) Ping(context.Context) error            { return nil }
@@ -51,6 +53,13 @@ func (stub *repositoryStub) Aggregate(context.Context, AggregateInput) ([]bson.M
 func (stub *repositoryStub) CreateAccount(context.Context, bson.D) (bool, error) { return true, nil }
 func (stub *repositoryStub) AccountIsActive(context.Context, string) (bool, error) {
 	return stub.accountActive, nil
+}
+func (stub *repositoryStub) CreatePaymentChannel(_ context.Context, document bson.D) (bool, error) {
+	stub.paymentChannel = document
+	return true, nil
+}
+func (stub *repositoryStub) PaymentChannelIsActive(context.Context, string) (bool, error) {
+	return stub.paymentChannelActive, nil
 }
 func (stub *repositoryStub) CreateTransaction(_ context.Context, document bson.D, _ string, requestHash string) (any, bool, error) {
 	stub.transaction = document
@@ -119,7 +128,7 @@ func (stub *repositoryStub) CompleteReminder(_ context.Context, document bson.D,
 
 func TestServiceRejectsGenericManagedWrite(t *testing.T) {
 	service := NewService(&repositoryStub{}, testLimits(), "Asia/Bangkok")
-	for _, collection := range []string{"transactions", "events"} {
+	for _, collection := range []string{"accounts", "payment_channels", "transactions", "events", "reminders", "reminder_completions"} {
 		_, err := service.InsertOne(context.Background(), collection, bson.D{{Key: "anything", Value: true}})
 		if err != ErrManagedCollection {
 			t.Fatalf("expected ErrManagedCollection for %s, got %v", collection, err)
@@ -160,6 +169,58 @@ func TestServiceBuildsDirectTransaction(t *testing.T) {
 	normalized := documentValue(t, descriptorDocument, "normalized").(*string)
 	if *normalized != "fuji" {
 		t.Fatalf("unexpected descriptor normalization: %q", *normalized)
+	}
+}
+
+func TestServiceCreatesPaymentChannel(t *testing.T) {
+	stub := &repositoryStub{}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+	service.now = func() time.Time { return time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC) }
+
+	channel, created, err := service.CreatePaymentChannel(context.Background(), PaymentChannelInput{
+		ID: "truemoney-wallet", Name: "  TrueMoney Wallet  ",
+	})
+	if err != nil || !created {
+		t.Fatalf("create payment channel: created=%v error=%v", created, err)
+	}
+	if channel.ID != "truemoney-wallet" || channel.Name != "TrueMoney Wallet" || !channel.Active {
+		t.Fatalf("unexpected payment channel: %#v", channel)
+	}
+	if documentValue(t, stub.paymentChannel, "name") != "TrueMoney Wallet" {
+		t.Fatalf("unexpected stored payment channel: %#v", stub.paymentChannel)
+	}
+}
+
+func TestServiceRecordsTransactionWithPaymentChannel(t *testing.T) {
+	stub := &repositoryStub{accountActive: true, paymentChannelActive: true}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+	descriptor := "7-Eleven"
+
+	_, err := service.CreateTransaction(context.Background(), TransactionInput{
+		RequestID: "570b5176-95c9-4812-9a2e-d52fb9b7e11a", OccurredOn: "2026-08-19",
+		AmountMinor: 16500, TransactionKind: "expense", AccountID: "krungsri-homepro-credit-card",
+		PaymentChannelID: "truemoney-wallet", DescriptorRaw: &descriptor,
+	})
+	if err != nil {
+		t.Fatalf("create transaction: %v", err)
+	}
+	if documentValue(t, stub.transaction, "paymentChannelId") != "truemoney-wallet" {
+		t.Fatalf("payment channel was not stored: %#v", stub.transaction)
+	}
+}
+
+func TestServiceRejectsInactivePaymentChannel(t *testing.T) {
+	stub := &repositoryStub{accountActive: true, paymentChannelActive: false}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+	descriptor := "7-Eleven"
+
+	_, err := service.CreateTransaction(context.Background(), TransactionInput{
+		RequestID: "570b5176-95c9-4812-9a2e-d52fb9b7e11a", OccurredOn: "2026-08-19",
+		AmountMinor: 16500, TransactionKind: "expense", AccountID: "krungsri-homepro-credit-card",
+		PaymentChannelID: "truemoney-wallet", DescriptorRaw: &descriptor,
+	})
+	if err != ErrInactivePaymentChannel {
+		t.Fatalf("expected ErrInactivePaymentChannel, got %v", err)
 	}
 }
 

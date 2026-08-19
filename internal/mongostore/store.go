@@ -58,6 +58,7 @@ func (store *Store) EnsureBootstrap(ctx context.Context) error {
 		validator bson.M
 	}{
 		{name: "accounts", validator: accountValidator()},
+		{name: "payment_channels", validator: paymentChannelValidator()},
 		{name: "transactions", validator: transactionValidator()},
 		{name: "memories"},
 		{name: "people"},
@@ -69,6 +70,11 @@ func (store *Store) EnsureBootstrap(ctx context.Context) error {
 	}
 	for _, collection := range collections {
 		if exists[collection.name] {
+			if collection.name == "transactions" {
+				if err := store.ensureExistingTransactionValidator(ctx); err != nil {
+					return err
+				}
+			}
 			if collection.name == "events" {
 				if err := store.ensureExistingEventValidator(ctx); err != nil {
 					return err
@@ -87,6 +93,37 @@ func (store *Store) EnsureBootstrap(ctx context.Context) error {
 
 	if err := store.ensureIndexes(ctx); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (store *Store) ensureExistingTransactionValidator(ctx context.Context) error {
+	specifications, err := store.database.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: "transactions"}})
+	if err != nil {
+		return fmt.Errorf("inspect transactions collection validator: %w", err)
+	}
+	if len(specifications) != 1 {
+		return fmt.Errorf("inspect transactions collection validator: expected one transactions collection")
+	}
+	if _, err := specifications[0].Options.LookupErr("validator", "$jsonSchema", "properties", "paymentChannelId"); err == nil {
+		return nil
+	}
+	schema := transactionValidator()["$jsonSchema"]
+	invalid, err := store.database.Collection("transactions").CountDocuments(ctx, bson.D{{Key: "$nor", Value: bson.A{bson.D{{Key: "$jsonSchema", Value: schema}}}}}, options.Count().SetLimit(1))
+	if err != nil {
+		return fmt.Errorf("validate existing transactions before migration: %w", err)
+	}
+	if invalid != 0 {
+		return fmt.Errorf("transactions collection contains documents incompatible with schema version 1; migrate or remove them before startup")
+	}
+	command := bson.D{
+		{Key: "collMod", Value: "transactions"},
+		{Key: "validator", Value: transactionValidator()},
+		{Key: "validationLevel", Value: "strict"},
+		{Key: "validationAction", Value: "error"},
+	}
+	if err := store.database.RunCommand(ctx, command).Err(); err != nil {
+		return fmt.Errorf("apply transactions collection validator (the database user needs collMod permission for this upgrade): %w", err)
 	}
 	return nil
 }
@@ -237,6 +274,28 @@ func (store *Store) AccountIsActive(ctx context.Context, id string) (bool, error
 	}, options.Count().SetLimit(1))
 	if err != nil {
 		return false, fmt.Errorf("look up account: %w", err)
+	}
+	return count == 1, nil
+}
+
+func (store *Store) CreatePaymentChannel(ctx context.Context, document bson.D) (bool, error) {
+	_, err := store.database.Collection("payment_channels").InsertOne(ctx, document)
+	if mongo.IsDuplicateKeyError(err) {
+		return false, memory.ErrPaymentChannelExists
+	}
+	if err != nil {
+		return false, fmt.Errorf("create payment channel: %w", err)
+	}
+	return true, nil
+}
+
+func (store *Store) PaymentChannelIsActive(ctx context.Context, id string) (bool, error) {
+	count, err := store.database.Collection("payment_channels").CountDocuments(ctx, bson.D{
+		{Key: "_id", Value: id},
+		{Key: "active", Value: true},
+	}, options.Count().SetLimit(1))
+	if err != nil {
+		return false, fmt.Errorf("look up payment channel: %w", err)
 	}
 	return count == 1, nil
 }
@@ -565,6 +624,21 @@ func accountValidator() bson.M {
 	}}
 }
 
+func paymentChannelValidator() bson.M {
+	return bson.M{"$jsonSchema": bson.M{
+		"bsonType":             "object",
+		"additionalProperties": false,
+		"required":             bson.A{"_id", "name", "active", "createdAt", "updatedAt"},
+		"properties": bson.M{
+			"_id":       bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
+			"name":      bson.M{"bsonType": "string", "minLength": 1, "maxLength": 200},
+			"active":    bson.M{"bsonType": "bool"},
+			"createdAt": bson.M{"bsonType": "date"},
+			"updatedAt": bson.M{"bsonType": "date"},
+		},
+	}}
+}
+
 func transactionValidator() bson.M {
 	nullableString := bson.M{"bsonType": bson.A{"string", "null"}}
 	return bson.M{"$jsonSchema": bson.M{
@@ -589,8 +663,9 @@ func transactionValidator() bson.M {
 					"currency": bson.M{"bsonType": "string", "pattern": "^[A-Z]{3}$"},
 				},
 			},
-			"transactionKind": bson.M{"enum": bson.A{"expense", "income", "refund", "credit_card_payment", "transfer"}},
-			"accountId":       bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
+			"transactionKind":  bson.M{"enum": bson.A{"expense", "income", "refund", "credit_card_payment", "transfer"}},
+			"accountId":        bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
+			"paymentChannelId": bson.M{"bsonType": "string", "minLength": 1, "maxLength": 100},
 			"descriptor": bson.M{
 				"bsonType":             "object",
 				"additionalProperties": false,

@@ -46,7 +46,7 @@ func IsReservedCollection(name string) bool {
 }
 
 func IsManagedCollection(name string) bool {
-	return name == "transactions" || name == "accounts" || name == "events" || name == "reminders" || name == "reminder_completions"
+	return name == "transactions" || name == "accounts" || name == "payment_channels" || name == "events" || name == "reminders" || name == "reminder_completions"
 }
 
 func ValidateFilter(document bson.D, allowEmpty bool) error {
@@ -160,6 +160,16 @@ func ValidateAccount(input AccountInput) error {
 	return nil
 }
 
+func ValidatePaymentChannel(input PaymentChannelInput) error {
+	if !idPattern.MatchString(input.ID) || len(input.ID) > 100 {
+		return fmt.Errorf("id must be a lowercase kebab-case identifier of at most 100 characters")
+	}
+	if strings.TrimSpace(input.Name) == "" || len(input.Name) > 200 {
+		return fmt.Errorf("name must contain 1 to 200 characters")
+	}
+	return nil
+}
+
 func ValidateReminder(input *ReminderInput, defaultTimezone string, now time.Time) error {
 	if !idPattern.MatchString(input.ID) || len(input.ID) > 100 {
 		return fmt.Errorf("id must be a lowercase kebab-case identifier of at most 100 characters")
@@ -259,6 +269,9 @@ func ValidateTransaction(input *TransactionInput, defaultTimezone string) error 
 	}
 	if !idPattern.MatchString(input.AccountID) || len(input.AccountID) > 100 {
 		return fmt.Errorf("accountId must be a lowercase kebab-case identifier")
+	}
+	if input.PaymentChannelID != "" && (!idPattern.MatchString(input.PaymentChannelID) || len(input.PaymentChannelID) > 100) {
+		return fmt.Errorf("paymentChannelId must be a lowercase kebab-case identifier")
 	}
 	if input.DescriptorRaw == nil && input.TransactionKind != "income" {
 		return fmt.Errorf("descriptorRaw is required unless transactionKind is income")

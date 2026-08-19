@@ -25,6 +25,7 @@ type Application interface {
 	DeleteOne(context.Context, memory.DeleteInput) (memory.WriteResult, error)
 	Aggregate(context.Context, memory.AggregateInput) ([]bson.M, error)
 	CreateAccount(context.Context, memory.AccountInput) (memory.AccountInfo, bool, error)
+	CreatePaymentChannel(context.Context, memory.PaymentChannelInput) (memory.PaymentChannelInfo, bool, error)
 	CreateTransaction(context.Context, memory.TransactionInput) (memory.WriteResult, error)
 	CreateEvent(context.Context, memory.EventInput) (memory.WriteResult, error)
 	GetEvent(context.Context, string) (bson.M, error)
@@ -57,6 +58,7 @@ func New(application Application, token string, maxBody int64, logger *slog.Logg
 	mux.Handle("GET /v1/collections", server.authenticate(http.HandlerFunc(server.listCollections)))
 	mux.Handle("POST /v1/collections", server.authenticate(http.HandlerFunc(server.createCollection)))
 	mux.Handle("POST /v1/accounts", server.authenticate(http.HandlerFunc(server.createAccount)))
+	mux.Handle("POST /v1/payment-channels", server.authenticate(http.HandlerFunc(server.createPaymentChannel)))
 	mux.Handle("POST /v1/transactions", server.authenticate(http.HandlerFunc(server.createTransaction)))
 	mux.Handle("POST /v1/events", server.authenticate(http.HandlerFunc(server.createEvent)))
 	mux.Handle("GET /v1/events/{id}", server.authenticate(http.HandlerFunc(server.getEvent)))
@@ -118,10 +120,14 @@ func (server *Server) handleError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusForbidden, "managed_collection", "generic writes are not allowed for this collection")
 	case errors.Is(err, memory.ErrInactiveAccount):
 		writeError(writer, http.StatusUnprocessableEntity, "inactive_account", "account does not exist or is inactive")
+	case errors.Is(err, memory.ErrInactivePaymentChannel):
+		writeError(writer, http.StatusUnprocessableEntity, "inactive_payment_channel", "payment channel does not exist or is inactive")
 	case errors.Is(err, memory.ErrIdempotencyConflict):
 		writeError(writer, http.StatusConflict, "idempotency_conflict", "requestId was already used for different content")
 	case errors.Is(err, memory.ErrAccountExists):
 		writeError(writer, http.StatusConflict, "account_exists", "an account with this id already exists")
+	case errors.Is(err, memory.ErrPaymentChannelExists):
+		writeError(writer, http.StatusConflict, "payment_channel_exists", "a payment channel with this id already exists")
 	case errors.Is(err, memory.ErrReminderExists):
 		writeError(writer, http.StatusConflict, "reminder_exists", "a reminder with this id already exists")
 	case errors.Is(err, memory.ErrResultLimit):
