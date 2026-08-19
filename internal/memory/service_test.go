@@ -234,6 +234,18 @@ func TestServiceSearchesEventsWithNormalizedFilters(t *testing.T) {
 	}
 }
 
+func TestServiceSearchEventsReturnsEmptyArray(t *testing.T) {
+	service := NewService(&repositoryStub{}, testLimits(), "Asia/Bangkok")
+
+	documents, err := service.SearchEvents(context.Background(), EventSearchInput{OccurredFrom: "2099-01-01"})
+	if err != nil {
+		t.Fatalf("search events: %v", err)
+	}
+	if documents == nil || len(documents) != 0 {
+		t.Fatalf("expected a non-nil empty result, got %#v", documents)
+	}
+}
+
 func TestServiceDeletesEventWithoutDeletingRelatedTransaction(t *testing.T) {
 	stub := &repositoryStub{eventDeleted: true}
 	service := NewService(stub, testLimits(), "Asia/Bangkok")

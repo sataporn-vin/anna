@@ -388,6 +388,9 @@ func (service *Service) SearchEvents(ctx context.Context, input EventSearchInput
 	if err != nil {
 		return nil, err
 	}
+	if documents == nil {
+		documents = make([]bson.M, 0)
+	}
 	if int64(len(documents)) > input.Limit {
 		return nil, fmt.Errorf("%w: event search record count", ErrResultLimit)
 	}
