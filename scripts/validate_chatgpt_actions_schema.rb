@@ -22,6 +22,20 @@ document.fetch("paths", {}).each do |path, path_item|
 
     errors << "Path #{path} has unrecognized method #{key}; skipping"
   end
+
+  path_item.each do |method, operation|
+    next unless http_methods.include?(method) && operation.is_a?(Hash)
+
+    operation_errors = operation.fetch("parameters", []).each_with_object([]) do |parameter, result|
+      next if parameter.is_a?(Hash) && parameter["name"].is_a?(String)
+
+      result << "In path #{path}, method #{method}, operationId #{operation["operationId"]}, parameter #{parameter.inspect} is has missing or non-string name; skipping"
+    end
+    errors.concat(operation_errors)
+    if operation_errors.any?
+      errors << "In path #{path}, method #{method}, operationId #{operation["operationId"]}, skipping function due to errors"
+    end
+  end
 end
 
 if errors.empty?

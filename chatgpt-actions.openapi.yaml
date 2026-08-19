@@ -185,7 +185,13 @@ paths:
       operationId: getEvent
       summary: Get one event
       parameters:
-        - $ref: "#/components/parameters/EventId"
+        - name: id
+          in: path
+          required: true
+          description: Event MongoDB object identifier.
+          schema:
+            type: string
+            pattern: "^[a-fA-F0-9]{24}$"
       responses:
         "200":
           description: The event.
@@ -203,7 +209,13 @@ paths:
         optional field. Server-owned fields and original source text cannot be
         changed.
       parameters:
-        - $ref: "#/components/parameters/EventId"
+        - name: id
+          in: path
+          required: true
+          description: Event MongoDB object identifier.
+          schema:
+            type: string
+            pattern: "^[a-fA-F0-9]{24}$"
       requestBody:
         required: true
         content:
@@ -227,7 +239,13 @@ paths:
       summary: Delete an event
       description: Delete only the event; linked transactions are unchanged.
       parameters:
-        - $ref: "#/components/parameters/EventId"
+        - name: id
+          in: path
+          required: true
+          description: Event MongoDB object identifier.
+          schema:
+            type: string
+            pattern: "^[a-fA-F0-9]{24}$"
       responses:
         "204":
           description: The event was deleted.
@@ -247,16 +265,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-
-  parameters:
-    EventId:
-      name: id
-      in: path
-      required: true
-      description: Event MongoDB object identifier.
-      schema:
-        type: string
-        pattern: "^[a-fA-F0-9]{24}$"
 
   schemas:
     ReminderDigestResponse:
