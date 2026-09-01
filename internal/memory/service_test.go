@@ -19,7 +19,7 @@ type repositoryStub struct {
 	transactionHash      string
 	transactionExisting  bson.M
 	transactionUpdate    bson.D
-	unsetPaymentChannel  bool
+	transactionUnsets    []string
 	event                bson.D
 	eventHash            string
 	events               []bson.M
@@ -78,9 +78,9 @@ func (stub *repositoryStub) TransactionByID(context.Context, bson.ObjectID) (bso
 	}
 	return stub.transactionExisting, nil
 }
-func (stub *repositoryStub) UpdateTransaction(_ context.Context, _ bson.ObjectID, update bson.D, unsetPaymentChannel bool) (bson.M, error) {
+func (stub *repositoryStub) UpdateTransaction(_ context.Context, _ bson.ObjectID, update bson.D, unsetFields []string) (bson.M, error) {
 	stub.transactionUpdate = update
-	stub.unsetPaymentChannel = unsetPaymentChannel
+	stub.transactionUnsets = unsetFields
 	document := bson.M{}
 	for _, element := range update {
 		document[element.Key] = element.Value
@@ -247,6 +247,8 @@ func TestServiceCorrectsTransactionMetadata(t *testing.T) {
 	oldNote := "coupon use was not specified"
 	stub := &repositoryStub{
 		transactionExisting: bson.M{
+			"occurredOn":      "2026-08-31",
+			"timezone":        "Asia/Bangkok",
 			"transactionKind": "expense",
 			"descriptor":      bson.M{"raw": descriptor, "normalized": "grab taxi"},
 			"merchantName":    "Grab",
@@ -272,7 +274,7 @@ func TestServiceCorrectsTransactionMetadata(t *testing.T) {
 	if *normalized != "grab taxi" {
 		t.Fatalf("unexpected normalized descriptor: %q", *normalized)
 	}
-	if stub.unsetPaymentChannel {
+	if len(stub.transactionUnsets) != 0 {
 		t.Fatal("transaction without a payment-channel patch should not require an unset when no channel exists")
 	}
 }
@@ -280,6 +282,8 @@ func TestServiceCorrectsTransactionMetadata(t *testing.T) {
 func TestServiceRejectsImmutableTransactionCorrection(t *testing.T) {
 	descriptor := "Grab Taxi"
 	stub := &repositoryStub{transactionExisting: bson.M{
+		"occurredOn":      "2026-08-31",
+		"timezone":        "Asia/Bangkok",
 		"transactionKind": "expense",
 		"descriptor":      bson.M{"raw": descriptor, "normalized": "grab taxi"},
 	}}
@@ -290,6 +294,75 @@ func TestServiceRejectsImmutableTransactionCorrection(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), `field "amountMinor" cannot be updated`) {
 		t.Fatalf("expected immutable-field rejection, got %v", err)
+	}
+}
+
+func TestServiceCorrectsTransactionOccurrence(t *testing.T) {
+	descriptor := "Grab Taxi"
+	originalTime := time.Date(2026, 8, 31, 1, 0, 0, 0, time.UTC)
+	stub := &repositoryStub{transactionExisting: bson.M{
+		"occurredOn":      "2026-08-31",
+		"occurredAt":      originalTime,
+		"timezone":        "Asia/Bangkok",
+		"transactionKind": "expense",
+		"descriptor":      bson.M{"raw": descriptor, "normalized": "grab taxi"},
+	}}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+
+	document, err := service.UpdateTransaction(context.Background(), "6a9528889f84b862a7497ca7", TransactionUpdateInput{
+		"occurredOn": json.RawMessage(`"2026-09-01"`),
+		"occurredAt": json.RawMessage(`"2026-09-01T18:30:00+07:00"`),
+		"timezone":   json.RawMessage(`"Asia/Bangkok"`),
+	})
+	if err != nil {
+		t.Fatalf("correct transaction occurrence: %v", err)
+	}
+	if document["occurredOn"] != "2026-09-01" || document["timezone"] != "Asia/Bangkok" {
+		t.Fatalf("unexpected occurrence correction: %#v", document)
+	}
+	wantTime := time.Date(2026, 9, 1, 11, 30, 0, 0, time.UTC)
+	if !document["occurredAt"].(time.Time).Equal(wantTime) {
+		t.Fatalf("unexpected occurredAt: %#v", document["occurredAt"])
+	}
+}
+
+func TestServiceClearsTransactionOccurrenceTime(t *testing.T) {
+	descriptor := "Grab Taxi"
+	stub := &repositoryStub{transactionExisting: bson.M{
+		"occurredOn":      "2026-08-31",
+		"occurredAt":      time.Date(2026, 8, 31, 1, 0, 0, 0, time.UTC),
+		"timezone":        "Asia/Bangkok",
+		"transactionKind": "expense",
+		"descriptor":      bson.M{"raw": descriptor, "normalized": "grab taxi"},
+	}}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+
+	_, err := service.UpdateTransaction(context.Background(), "6a9528889f84b862a7497ca7", TransactionUpdateInput{
+		"occurredAt": json.RawMessage(`null`),
+	})
+	if err != nil {
+		t.Fatalf("clear transaction occurrence time: %v", err)
+	}
+	if len(stub.transactionUnsets) != 1 || stub.transactionUnsets[0] != "occurredAt" {
+		t.Fatalf("unexpected unset fields: %#v", stub.transactionUnsets)
+	}
+}
+
+func TestServiceRejectsMismatchedTransactionOccurrence(t *testing.T) {
+	descriptor := "Grab Taxi"
+	stub := &repositoryStub{transactionExisting: bson.M{
+		"occurredOn":      "2026-08-31",
+		"timezone":        "Asia/Bangkok",
+		"transactionKind": "expense",
+		"descriptor":      bson.M{"raw": descriptor, "normalized": "grab taxi"},
+	}}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+
+	_, err := service.UpdateTransaction(context.Background(), "6a9528889f84b862a7497ca7", TransactionUpdateInput{
+		"occurredAt": json.RawMessage(`"2026-09-01T18:30:00+07:00"`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "occurredAt does not occur on occurredOn") {
+		t.Fatalf("expected occurrence mismatch rejection, got %v", err)
 	}
 }
 

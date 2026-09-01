@@ -69,9 +69,15 @@ func TestManagedEventsIntegration(t *testing.T) {
 	if storedTransaction["paymentChannelId"] != "truemoney-wallet" {
 		t.Fatalf("unexpected stored payment channel: %#v", storedTransaction)
 	}
+	correctedTime := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 18, 30, 0, 0, localNow.Location())
+	encodedCorrectedTime, err := json.Marshal(correctedTime.Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("encode corrected transaction time: %v", err)
+	}
 	corrected, err := application.UpdateTransaction(ctx, transaction.ID.(bson.ObjectID).Hex(), memory.TransactionUpdateInput{
 		"note":             json.RawMessage(`"coupon was used"`),
 		"paymentChannelId": json.RawMessage(`null`),
+		"occurredAt":       encodedCorrectedTime,
 	})
 	if err != nil {
 		t.Fatalf("correct transaction metadata: %v", err)
@@ -81,6 +87,9 @@ func TestManagedEventsIntegration(t *testing.T) {
 	}
 	if _, exists := corrected["paymentChannelId"]; exists {
 		t.Fatalf("expected payment channel to be cleared: %#v", corrected)
+	}
+	if !corrected["occurredAt"].(time.Time).Equal(correctedTime.UTC()) {
+		t.Fatalf("unexpected corrected occurrence time: %#v", corrected)
 	}
 	if corrected["source"].(bson.M)["requestId"] != storedTransaction["source"].(bson.M)["requestId"] {
 		t.Fatalf("transaction correction changed source provenance: %#v", corrected)

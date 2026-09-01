@@ -344,10 +344,14 @@ func (store *Store) TransactionByID(ctx context.Context, id bson.ObjectID) (bson
 	return document, nil
 }
 
-func (store *Store) UpdateTransaction(ctx context.Context, id bson.ObjectID, fields bson.D, unsetPaymentChannel bool) (bson.M, error) {
+func (store *Store) UpdateTransaction(ctx context.Context, id bson.ObjectID, fields bson.D, unsetFields []string) (bson.M, error) {
 	update := bson.D{{Key: "$set", Value: fields}}
-	if unsetPaymentChannel {
-		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "paymentChannelId", Value: ""}}})
+	if len(unsetFields) > 0 {
+		unset := make(bson.D, 0, len(unsetFields))
+		for _, field := range unsetFields {
+			unset = append(unset, bson.E{Key: field, Value: ""})
+		}
+		update = append(update, bson.E{Key: "$unset", Value: unset})
 	}
 	var document bson.M
 	err := store.database.Collection("transactions").FindOneAndUpdate(

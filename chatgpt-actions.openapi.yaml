@@ -371,11 +371,11 @@ paths:
   /v1/transactions/{id}:
     patch:
       operationId: updateTransaction
-      summary: Correct transaction metadata
+      summary: Correct transaction occurrence details or metadata
       description: >-
-        Apply merge-patch semantics to non-accounting transaction metadata.
-        Null clears an optional field. Amount, currency, transaction kind,
-        account, dates, source provenance, and timestamps cannot be changed.
+        Apply merge-patch semantics to supported transaction fields. Null
+        clears an optional field. Amount, currency, transaction kind, account,
+        source provenance, and server-owned timestamps cannot be changed.
       parameters:
         - name: id
           in: path
@@ -1007,6 +1007,18 @@ components:
       additionalProperties: false
       minProperties: 1
       properties:
+        occurredOn:
+          type: string
+          format: date
+        occurredAt:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+          description: Include only when the corrected transaction has a known time.
+        timezone:
+          type: string
+          description: IANA timezone used to interpret occurredOn and occurredAt.
         descriptorRaw:
           oneOf:
             - type: string

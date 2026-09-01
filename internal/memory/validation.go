@@ -241,19 +241,8 @@ func ValidateTransaction(input *TransactionInput, defaultTimezone string) error 
 	if _, err := uuid.Parse(input.RequestID); err != nil {
 		return fmt.Errorf("requestId must be a UUID")
 	}
-	if input.Timezone == "" {
-		input.Timezone = defaultTimezone
-	}
-	location, err := time.LoadLocation(input.Timezone)
-	if err != nil {
-		return fmt.Errorf("timezone must be a valid IANA timezone")
-	}
-	date, err := time.Parse("2006-01-02", input.OccurredOn)
-	if err != nil || date.Format("2006-01-02") != input.OccurredOn {
-		return fmt.Errorf("occurredOn must be a real date in YYYY-MM-DD format")
-	}
-	if input.OccurredAt != nil && input.OccurredAt.In(location).Format("2006-01-02") != input.OccurredOn {
-		return fmt.Errorf("occurredAt does not occur on occurredOn in timezone")
+	if err := ValidateTransactionOccurrence(input, defaultTimezone); err != nil {
+		return err
 	}
 	if input.AmountMinor <= 0 {
 		return fmt.Errorf("amountMinor must be positive")
@@ -274,6 +263,24 @@ func ValidateTransaction(input *TransactionInput, defaultTimezone string) error 
 		return fmt.Errorf("rawText must not exceed 5000 characters")
 	}
 	return ValidateTransactionCorrection(input)
+}
+
+func ValidateTransactionOccurrence(input *TransactionInput, defaultTimezone string) error {
+	if input.Timezone == "" {
+		input.Timezone = defaultTimezone
+	}
+	location, err := time.LoadLocation(input.Timezone)
+	if err != nil {
+		return fmt.Errorf("timezone must be a valid IANA timezone")
+	}
+	date, err := time.Parse("2006-01-02", input.OccurredOn)
+	if err != nil || date.Format("2006-01-02") != input.OccurredOn {
+		return fmt.Errorf("occurredOn must be a real date in YYYY-MM-DD format")
+	}
+	if input.OccurredAt != nil && input.OccurredAt.In(location).Format("2006-01-02") != input.OccurredOn {
+		return fmt.Errorf("occurredAt does not occur on occurredOn in timezone")
+	}
+	return nil
 }
 
 func ValidateTransactionCorrection(input *TransactionInput) error {

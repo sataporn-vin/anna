@@ -321,11 +321,14 @@ func (service *Service) CreateTransaction(ctx context.Context, input Transaction
 }
 
 type storedTransaction struct {
-	TransactionKind  string   `bson:"transactionKind"`
-	PaymentChannelID string   `bson:"paymentChannelId"`
-	MerchantName     *string  `bson:"merchantName"`
-	CategoryPath     []string `bson:"categoryPath"`
-	Note             *string  `bson:"note"`
+	OccurredOn       string     `bson:"occurredOn"`
+	OccurredAt       *time.Time `bson:"occurredAt"`
+	Timezone         string     `bson:"timezone"`
+	TransactionKind  string     `bson:"transactionKind"`
+	PaymentChannelID string     `bson:"paymentChannelId"`
+	MerchantName     *string    `bson:"merchantName"`
+	CategoryPath     []string   `bson:"categoryPath"`
+	Note             *string    `bson:"note"`
 	Descriptor       struct {
 		Raw *string `bson:"raw"`
 	} `bson:"descriptor"`
@@ -352,6 +355,9 @@ func (service *Service) UpdateTransaction(ctx context.Context, id string, patch 
 	if err := applyTransactionPatch(&input, patch); err != nil {
 		return nil, Invalid(err)
 	}
+	if err := ValidateTransactionOccurrence(&input, service.defaultTimezone); err != nil {
+		return nil, Invalid(err)
+	}
 	if err := ValidateTransactionCorrection(&input); err != nil {
 		return nil, Invalid(err)
 	}
@@ -366,8 +372,19 @@ func (service *Service) UpdateTransaction(ctx context.Context, id string, patch 
 		}
 	}
 	fields := bson.D{{Key: "updatedAt", Value: service.now().UTC()}}
+	unsetFields := make([]string, 0, 2)
 	for field := range patch {
 		switch field {
+		case "occurredOn":
+			fields = append(fields, bson.E{Key: "occurredOn", Value: input.OccurredOn})
+		case "occurredAt":
+			if input.OccurredAt == nil {
+				unsetFields = append(unsetFields, "occurredAt")
+			} else {
+				fields = append(fields, bson.E{Key: "occurredAt", Value: input.OccurredAt.UTC()})
+			}
+		case "timezone":
+			fields = append(fields, bson.E{Key: "timezone", Value: input.Timezone})
 		case "descriptorRaw":
 			fields = append(fields, bson.E{Key: "descriptor", Value: bson.D{
 				{Key: "raw", Value: input.DescriptorRaw},
@@ -382,10 +399,12 @@ func (service *Service) UpdateTransaction(ctx context.Context, id string, patch 
 		case "paymentChannelId":
 			if input.PaymentChannelID != "" {
 				fields = append(fields, bson.E{Key: "paymentChannelId", Value: input.PaymentChannelID})
+			} else {
+				unsetFields = append(unsetFields, "paymentChannelId")
 			}
 		}
 	}
-	return service.repository.UpdateTransaction(ctx, objectID, fields, paymentChannelChanged && input.PaymentChannelID == "")
+	return service.repository.UpdateTransaction(ctx, objectID, fields, unsetFields)
 }
 
 func transactionInputFromDocument(document bson.M) (TransactionInput, error) {
@@ -398,6 +417,7 @@ func transactionInputFromDocument(document bson.M) (TransactionInput, error) {
 		return TransactionInput{}, fmt.Errorf("decode existing transaction: %w", err)
 	}
 	return TransactionInput{
+		OccurredOn: stored.OccurredOn, OccurredAt: stored.OccurredAt, Timezone: stored.Timezone,
 		TransactionKind: stored.TransactionKind, PaymentChannelID: stored.PaymentChannelID,
 		DescriptorRaw: stored.Descriptor.Raw, MerchantName: stored.MerchantName,
 		CategoryPath: stored.CategoryPath, Note: stored.Note,
@@ -406,7 +426,22 @@ func transactionInputFromDocument(document bson.M) (TransactionInput, error) {
 
 func applyTransactionPatch(input *TransactionInput, patch TransactionUpdateInput) error {
 	for field, raw := range patch {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && (field == "occurredOn" || field == "timezone") {
+			return fmt.Errorf("field %q cannot be null", field)
+		}
 		switch field {
+		case "occurredOn":
+			if err := json.Unmarshal(raw, &input.OccurredOn); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
+		case "occurredAt":
+			if err := json.Unmarshal(raw, &input.OccurredAt); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
+		case "timezone":
+			if err := json.Unmarshal(raw, &input.Timezone); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
 		case "descriptorRaw":
 			if err := json.Unmarshal(raw, &input.DescriptorRaw); err != nil {
 				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
