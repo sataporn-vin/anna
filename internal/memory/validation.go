@@ -270,6 +270,13 @@ func ValidateTransaction(input *TransactionInput, defaultTimezone string) error 
 	if !idPattern.MatchString(input.AccountID) || len(input.AccountID) > 100 {
 		return fmt.Errorf("accountId must be a lowercase kebab-case identifier")
 	}
+	if input.RawText != nil && len(*input.RawText) > 5000 {
+		return fmt.Errorf("rawText must not exceed 5000 characters")
+	}
+	return ValidateTransactionCorrection(input)
+}
+
+func ValidateTransactionCorrection(input *TransactionInput) error {
 	if input.PaymentChannelID != "" && (!idPattern.MatchString(input.PaymentChannelID) || len(input.PaymentChannelID) > 100) {
 		return fmt.Errorf("paymentChannelId must be a lowercase kebab-case identifier")
 	}
@@ -284,9 +291,6 @@ func ValidateTransaction(input *TransactionInput, defaultTimezone string) error 
 	}
 	if input.Note != nil && len(*input.Note) > 5000 {
 		return fmt.Errorf("note must not exceed 5000 characters")
-	}
-	if input.RawText != nil && len(*input.RawText) > 5000 {
-		return fmt.Errorf("rawText must not exceed 5000 characters")
 	}
 	if len(input.CategoryPath) > 8 {
 		return fmt.Errorf("categoryPath must not exceed 8 segments")

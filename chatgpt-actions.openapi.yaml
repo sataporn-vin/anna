@@ -368,6 +368,41 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /v1/transactions/{id}:
+    patch:
+      operationId: updateTransaction
+      summary: Correct transaction metadata
+      description: >-
+        Apply merge-patch semantics to non-accounting transaction metadata.
+        Null clears an optional field. Amount, currency, transaction kind,
+        account, dates, source provenance, and timestamps cannot be changed.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Transaction MongoDB object identifier.
+          schema:
+            type: string
+            pattern: "^[a-fA-F0-9]{24}$"
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: "#/components/schemas/UpdateTransactionRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTransactionRequest"
+      responses:
+        "200":
+          description: The updated transaction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /v1/events:
     post:
       operationId: recordEvent
@@ -966,6 +1001,43 @@ components:
           type: string
           maxLength: 5000
           description: Preserve the user's original transaction message.
+
+    UpdateTransactionRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        descriptorRaw:
+          oneOf:
+            - type: string
+              maxLength: 1000
+            - type: "null"
+          description: Cannot be cleared unless the transaction kind is income.
+        merchantName:
+          oneOf:
+            - type: string
+              maxLength: 300
+            - type: "null"
+        categoryPath:
+          oneOf:
+            - type: array
+              maxItems: 8
+              items:
+                type: string
+                minLength: 1
+                maxLength: 100
+            - type: "null"
+        note:
+          oneOf:
+            - type: string
+              maxLength: 5000
+            - type: "null"
+        paymentChannelId:
+          oneOf:
+            - type: string
+              pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              maxLength: 100
+            - type: "null"
 
     EventType:
       type: string

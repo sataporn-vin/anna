@@ -119,6 +119,8 @@ type TransactionInput struct {
 	RawText          *string    `json:"rawText,omitempty"`
 }
 
+type TransactionUpdateInput map[string]json.RawMessage
+
 type EventFinancialContextInput struct {
 	Currency             string `json:"currency" bson:"currency"`
 	TotalValueMinor      *int64 `json:"totalValueMinor,omitempty" bson:"totalValueMinor"`

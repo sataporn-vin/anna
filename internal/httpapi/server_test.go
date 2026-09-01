@@ -23,6 +23,7 @@ type eventApplicationStub struct {
 	accountInput        memory.AccountInput
 	paymentChannelInput memory.PaymentChannelInput
 	transactionInput    memory.TransactionInput
+	transactionUpdate   memory.TransactionUpdateInput
 }
 
 func (stub *eventApplicationStub) CreateAccount(_ context.Context, input memory.AccountInput) (memory.AccountInfo, bool, error) {
@@ -38,6 +39,11 @@ func (stub *eventApplicationStub) CreatePaymentChannel(_ context.Context, input 
 func (stub *eventApplicationStub) CreateTransaction(_ context.Context, input memory.TransactionInput) (memory.WriteResult, error) {
 	stub.transactionInput = input
 	return memory.WriteResult{ID: "transaction-id", Created: true}, nil
+}
+
+func (stub *eventApplicationStub) UpdateTransaction(_ context.Context, _ string, input memory.TransactionUpdateInput) (bson.M, error) {
+	stub.transactionUpdate = input
+	return bson.M{"note": "coupon was used"}, nil
 }
 
 func (stub *eventApplicationStub) CreateEvent(_ context.Context, input memory.EventInput) (memory.WriteResult, error) {
@@ -167,6 +173,24 @@ func TestRecordTransactionAcceptsPaymentChannel(t *testing.T) {
 	}
 	if application.transactionInput.PaymentChannelID != "truemoney-wallet" {
 		t.Fatalf("unexpected transaction input: %#v", application.transactionInput)
+	}
+}
+
+func TestUpdateTransactionUsesValidatedMergePatch(t *testing.T) {
+	application := &eventApplicationStub{}
+	handler := New(application, "01234567890123456789012345678901", 1<<20, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(http.MethodPatch, "/v1/transactions/6a9528889f84b862a7497ca7", bytes.NewReader([]byte(`{"note":"coupon was used"}`)))
+	request.Header.Set("Authorization", "Bearer 01234567890123456789012345678901")
+	request.Header.Set("Content-Type", "application/merge-patch+json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if string(application.transactionUpdate["note"]) != `"coupon was used"` {
+		t.Fatalf("unexpected update input: %#v", application.transactionUpdate)
 	}
 }
 

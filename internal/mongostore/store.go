@@ -332,6 +332,39 @@ func (store *Store) TransactionExists(ctx context.Context, id bson.ObjectID) (bo
 	return count == 1, nil
 }
 
+func (store *Store) TransactionByID(ctx context.Context, id bson.ObjectID) (bson.M, error) {
+	var document bson.M
+	err := store.database.Collection("transactions").FindOne(ctx, bson.D{{Key: "_id", Value: id}}).Decode(&document)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, memory.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get transaction: %w", err)
+	}
+	return document, nil
+}
+
+func (store *Store) UpdateTransaction(ctx context.Context, id bson.ObjectID, fields bson.D, unsetPaymentChannel bool) (bson.M, error) {
+	update := bson.D{{Key: "$set", Value: fields}}
+	if unsetPaymentChannel {
+		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "paymentChannelId", Value: ""}}})
+	}
+	var document bson.M
+	err := store.database.Collection("transactions").FindOneAndUpdate(
+		ctx,
+		bson.D{{Key: "_id", Value: id}},
+		update,
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&document)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, memory.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update transaction: %w", err)
+	}
+	return document, nil
+}
+
 func (store *Store) CreateEvent(ctx context.Context, document bson.D, requestID, requestHash string) (any, bool, error) {
 	result, err := store.database.Collection("events").InsertOne(ctx, document)
 	if err == nil {

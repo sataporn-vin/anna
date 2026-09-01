@@ -320,6 +320,128 @@ func (service *Service) CreateTransaction(ctx context.Context, input Transaction
 	return WriteResult{ID: id, Created: created}, nil
 }
 
+type storedTransaction struct {
+	TransactionKind  string   `bson:"transactionKind"`
+	PaymentChannelID string   `bson:"paymentChannelId"`
+	MerchantName     *string  `bson:"merchantName"`
+	CategoryPath     []string `bson:"categoryPath"`
+	Note             *string  `bson:"note"`
+	Descriptor       struct {
+		Raw *string `bson:"raw"`
+	} `bson:"descriptor"`
+}
+
+func (service *Service) UpdateTransaction(ctx context.Context, id string, patch TransactionUpdateInput) (bson.M, error) {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, Invalid(fmt.Errorf("transaction id must be a 24-character hexadecimal object identifier"))
+	}
+	if len(patch) == 0 {
+		return nil, Invalid(fmt.Errorf("transaction update must contain at least one field"))
+	}
+	ctx, cancel := service.operationContext(ctx)
+	defer cancel()
+	existing, err := service.repository.TransactionByID(ctx, objectID)
+	if err != nil {
+		return nil, err
+	}
+	input, err := transactionInputFromDocument(existing)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyTransactionPatch(&input, patch); err != nil {
+		return nil, Invalid(err)
+	}
+	if err := ValidateTransactionCorrection(&input); err != nil {
+		return nil, Invalid(err)
+	}
+	_, paymentChannelChanged := patch["paymentChannelId"]
+	if paymentChannelChanged && input.PaymentChannelID != "" {
+		active, err := service.repository.PaymentChannelIsActive(ctx, input.PaymentChannelID)
+		if err != nil {
+			return nil, err
+		}
+		if !active {
+			return nil, ErrInactivePaymentChannel
+		}
+	}
+	fields := bson.D{{Key: "updatedAt", Value: service.now().UTC()}}
+	for field := range patch {
+		switch field {
+		case "descriptorRaw":
+			fields = append(fields, bson.E{Key: "descriptor", Value: bson.D{
+				{Key: "raw", Value: input.DescriptorRaw},
+				{Key: "normalized", Value: NormalizeDescriptor(input.DescriptorRaw)},
+			}})
+		case "merchantName":
+			fields = append(fields, bson.E{Key: "merchantName", Value: input.MerchantName})
+		case "categoryPath":
+			fields = append(fields, bson.E{Key: "categoryPath", Value: input.CategoryPath})
+		case "note":
+			fields = append(fields, bson.E{Key: "note", Value: input.Note})
+		case "paymentChannelId":
+			if input.PaymentChannelID != "" {
+				fields = append(fields, bson.E{Key: "paymentChannelId", Value: input.PaymentChannelID})
+			}
+		}
+	}
+	return service.repository.UpdateTransaction(ctx, objectID, fields, paymentChannelChanged && input.PaymentChannelID == "")
+}
+
+func transactionInputFromDocument(document bson.M) (TransactionInput, error) {
+	encoded, err := bson.Marshal(document)
+	if err != nil {
+		return TransactionInput{}, fmt.Errorf("encode existing transaction: %w", err)
+	}
+	var stored storedTransaction
+	if err := bson.Unmarshal(encoded, &stored); err != nil {
+		return TransactionInput{}, fmt.Errorf("decode existing transaction: %w", err)
+	}
+	return TransactionInput{
+		TransactionKind: stored.TransactionKind, PaymentChannelID: stored.PaymentChannelID,
+		DescriptorRaw: stored.Descriptor.Raw, MerchantName: stored.MerchantName,
+		CategoryPath: stored.CategoryPath, Note: stored.Note,
+	}, nil
+}
+
+func applyTransactionPatch(input *TransactionInput, patch TransactionUpdateInput) error {
+	for field, raw := range patch {
+		switch field {
+		case "descriptorRaw":
+			if err := json.Unmarshal(raw, &input.DescriptorRaw); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
+		case "merchantName":
+			if err := json.Unmarshal(raw, &input.MerchantName); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
+		case "categoryPath":
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				input.CategoryPath = nil
+				continue
+			}
+			if err := json.Unmarshal(raw, &input.CategoryPath); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
+		case "note":
+			if err := json.Unmarshal(raw, &input.Note); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
+		case "paymentChannelId":
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				input.PaymentChannelID = ""
+				continue
+			}
+			if err := json.Unmarshal(raw, &input.PaymentChannelID); err != nil {
+				return fmt.Errorf("field %q contains invalid JSON: %w", field, err)
+			}
+		default:
+			return fmt.Errorf("field %q cannot be updated", field)
+		}
+	}
+	return nil
+}
+
 func (service *Service) CreateEvent(ctx context.Context, input EventInput) (WriteResult, error) {
 	if err := ValidateEvent(&input, service.defaultTimezone, service.now()); err != nil {
 		return WriteResult{}, Invalid(err)

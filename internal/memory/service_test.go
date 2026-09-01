@@ -17,6 +17,9 @@ type repositoryStub struct {
 	paymentChannel       bson.D
 	transaction          bson.D
 	transactionHash      string
+	transactionExisting  bson.M
+	transactionUpdate    bson.D
+	unsetPaymentChannel  bool
 	event                bson.D
 	eventHash            string
 	events               []bson.M
@@ -68,6 +71,21 @@ func (stub *repositoryStub) CreateTransaction(_ context.Context, document bson.D
 }
 func (stub *repositoryStub) TransactionExists(context.Context, bson.ObjectID) (bool, error) {
 	return true, nil
+}
+func (stub *repositoryStub) TransactionByID(context.Context, bson.ObjectID) (bson.M, error) {
+	if stub.transactionExisting == nil {
+		return nil, ErrNotFound
+	}
+	return stub.transactionExisting, nil
+}
+func (stub *repositoryStub) UpdateTransaction(_ context.Context, _ bson.ObjectID, update bson.D, unsetPaymentChannel bool) (bson.M, error) {
+	stub.transactionUpdate = update
+	stub.unsetPaymentChannel = unsetPaymentChannel
+	document := bson.M{}
+	for _, element := range update {
+		document[element.Key] = element.Value
+	}
+	return document, nil
 }
 func (stub *repositoryStub) CreateEvent(_ context.Context, document bson.D, _ string, requestHash string) (any, bool, error) {
 	stub.event = document
@@ -221,6 +239,57 @@ func TestServiceRejectsInactivePaymentChannel(t *testing.T) {
 	})
 	if err != ErrInactivePaymentChannel {
 		t.Fatalf("expected ErrInactivePaymentChannel, got %v", err)
+	}
+}
+
+func TestServiceCorrectsTransactionMetadata(t *testing.T) {
+	descriptor := "Grab Taxi"
+	oldNote := "coupon use was not specified"
+	stub := &repositoryStub{
+		transactionExisting: bson.M{
+			"transactionKind": "expense",
+			"descriptor":      bson.M{"raw": descriptor, "normalized": "grab taxi"},
+			"merchantName":    "Grab",
+			"categoryPath":    bson.A{"Transportation", "Taxi"},
+			"note":            oldNote,
+		},
+	}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+	service.now = func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }
+
+	document, err := service.UpdateTransaction(context.Background(), "6a9528889f84b862a7497ca7", TransactionUpdateInput{
+		"descriptorRaw": json.RawMessage(`"  GRAB Taxi  "`),
+		"note":          json.RawMessage(`"coupon was used"`),
+	})
+	if err != nil {
+		t.Fatalf("update transaction: %v", err)
+	}
+	if document["note"] == nil || *(document["note"].(*string)) != "coupon was used" {
+		t.Fatalf("unexpected updated note: %#v", document)
+	}
+	descriptorDocument := document["descriptor"].(bson.D)
+	normalized := documentValue(t, descriptorDocument, "normalized").(*string)
+	if *normalized != "grab taxi" {
+		t.Fatalf("unexpected normalized descriptor: %q", *normalized)
+	}
+	if stub.unsetPaymentChannel {
+		t.Fatal("transaction without a payment-channel patch should not require an unset when no channel exists")
+	}
+}
+
+func TestServiceRejectsImmutableTransactionCorrection(t *testing.T) {
+	descriptor := "Grab Taxi"
+	stub := &repositoryStub{transactionExisting: bson.M{
+		"transactionKind": "expense",
+		"descriptor":      bson.M{"raw": descriptor, "normalized": "grab taxi"},
+	}}
+	service := NewService(stub, testLimits(), "Asia/Bangkok")
+
+	_, err := service.UpdateTransaction(context.Background(), "6a9528889f84b862a7497ca7", TransactionUpdateInput{
+		"amountMinor": json.RawMessage(`1`),
+	})
+	if err == nil || !strings.Contains(err.Error(), `field "amountMinor" cannot be updated`) {
+		t.Fatalf("expected immutable-field rejection, got %v", err)
 	}
 }
 

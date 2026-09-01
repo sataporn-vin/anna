@@ -211,6 +211,7 @@ Use phase `occurrence` to complete the wear reminder itself. Completions apply o
 | `POST` | `/v1/accounts` | Create a managed account |
 | `POST` | `/v1/payment-channels` | Create a managed payment channel |
 | `POST` | `/v1/transactions` | Create an idempotent, validated transaction |
+| `PATCH` | `/v1/transactions/{id}` | Correct transaction metadata without changing accounting fields |
 | `POST` | `/v1/events` | Create an idempotent, validated completed event |
 | `GET` | `/v1/events/{id}` | Retrieve one event |
 | `POST` | `/v1/events/search` | Search events with structured filters |

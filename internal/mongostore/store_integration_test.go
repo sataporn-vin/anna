@@ -69,6 +69,22 @@ func TestManagedEventsIntegration(t *testing.T) {
 	if storedTransaction["paymentChannelId"] != "truemoney-wallet" {
 		t.Fatalf("unexpected stored payment channel: %#v", storedTransaction)
 	}
+	corrected, err := application.UpdateTransaction(ctx, transaction.ID.(bson.ObjectID).Hex(), memory.TransactionUpdateInput{
+		"note":             json.RawMessage(`"coupon was used"`),
+		"paymentChannelId": json.RawMessage(`null`),
+	})
+	if err != nil {
+		t.Fatalf("correct transaction metadata: %v", err)
+	}
+	if corrected["note"] != "coupon was used" {
+		t.Fatalf("unexpected corrected transaction: %#v", corrected)
+	}
+	if _, exists := corrected["paymentChannelId"]; exists {
+		t.Fatalf("expected payment channel to be cleared: %#v", corrected)
+	}
+	if corrected["source"].(bson.M)["requestId"] != storedTransaction["source"].(bson.M)["requestId"] {
+		t.Fatalf("transaction correction changed source provenance: %#v", corrected)
+	}
 	requestID := uuid.NewString()
 	input := memory.EventInput{
 		RequestID:  requestID,

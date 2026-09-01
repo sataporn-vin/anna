@@ -123,6 +123,20 @@ func (server *Server) createTransaction(writer http.ResponseWriter, request *htt
 	writeWriteResult(writer, status, result)
 }
 
+func (server *Server) updateTransaction(writer http.ResponseWriter, request *http.Request) {
+	var input memory.TransactionUpdateInput
+	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {
+		server.handleError(writer, memory.Invalid(err))
+		return
+	}
+	document, err := server.application.UpdateTransaction(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		server.handleError(writer, err)
+		return
+	}
+	writeDocument(writer, http.StatusOK, document)
+}
+
 func (server *Server) createEvent(writer http.ResponseWriter, request *http.Request) {
 	var input memory.EventInput
 	if err := decodeJSON(writer, request, server.maxBody, &input); err != nil {

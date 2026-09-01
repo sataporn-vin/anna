@@ -461,6 +461,7 @@ GET  /v1/collections
 POST /v1/collections
 POST /v1/accounts
 POST /v1/transactions
+PATCH /v1/transactions/{id}
 POST /v1/events
 GET  /v1/events/{id}
 POST /v1/events/search

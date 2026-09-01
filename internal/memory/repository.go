@@ -23,6 +23,8 @@ type Repository interface {
 	PaymentChannelIsActive(context.Context, string) (bool, error)
 	CreateTransaction(context.Context, bson.D, string, string) (any, bool, error)
 	TransactionExists(context.Context, bson.ObjectID) (bool, error)
+	TransactionByID(context.Context, bson.ObjectID) (bson.M, error)
+	UpdateTransaction(context.Context, bson.ObjectID, bson.D, bool) (bson.M, error)
 	CreateEvent(context.Context, bson.D, string, string) (any, bool, error)
 	EventByID(context.Context, bson.ObjectID) (bson.M, error)
 	SearchEvents(context.Context, EventSearchInput) ([]bson.M, error)
