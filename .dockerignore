@@ -2,4 +2,6 @@
 .env
 bin
 coverage.out
+mcp/dist
+mcp/node_modules
 *.md

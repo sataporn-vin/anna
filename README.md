@@ -10,7 +10,13 @@ Anna is a single-user personal-memory backend. Version one provides:
 - split `occurredOn` and optional `occurredAt` date semantics;
 - portable Docker deployment for local use, Railway, and later self-hosting.
 
-The bulk expense-memo parser, aliases, MCP, semantic search, and multi-user sharing are not implemented yet.
+The bulk expense-memo parser, aliases, semantic search, and multi-user sharing are not implemented yet.
+
+## Anna dashboard MCP app
+
+The read-only MCP app in [`mcp`](mcp/README.md) exposes focused tools for expense summaries, transaction drill-down, Kokomi energy trends, and fitness measurements. Its React/Recharts widget runs in the MCP host, while the MCP server calls this API with the Anna bearer token; neither that token nor MongoDB credentials are sent to the widget.
+
+The current static MCP bearer token is intended for private development and single-user clients that support custom headers. A public ChatGPT app still requires OAuth 2.1, a dedicated widget domain, deployment, and submission review.
 
 ## Local startup
 
